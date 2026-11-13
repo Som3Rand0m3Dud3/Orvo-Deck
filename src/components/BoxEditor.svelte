@@ -9,7 +9,7 @@
 	import { getWebserverUrl } from "$lib/ports";
 	import { inspectedInstance } from "$lib/propertyInspector";
 	import { resizeImage } from "$lib/rendererHelper";
-	import { BOX_COLOURS, type BoxMode, SYMBOL_COLOURS, SYMBOLS, blankUrl, modeOf, symbolUrl } from "$lib/symbols";
+	import { BOX_COLOURS, type BoxMode, SYMBOL_COLOURS, SYMBOLS, blankUrl, modeOf, modeOfAsync, symbolUrl } from "$lib/symbols";
 
 	import { invoke } from "@tauri-apps/api/core";
 
@@ -38,7 +38,14 @@
 		stateIndex = instance.current_state ?? 0;
 	}
 	$: st = instance ? instance.states[stateIndex] : null;
-	$: info = st ? modeOf(st.image_override) : { mode: "live" as BoxMode };
+	let info: { mode: BoxMode; symbol?: string; colour?: string } = { mode: "live" };
+	$: {
+		const override = st ? st.image_override : null;
+		info = modeOf(override);
+		modeOfAsync(override, getWebserverUrl).then((result) => {
+			if (st && st.image_override == override) info = result;
+		});
+	}
 	$: actionName = instance ? ($localisations?.[instance.action.plugin]?.[instance.action.uuid]?.Name ?? instance.action.name) : "";
 	$: icon = instance ? (instance.action.icon.startsWith("opendeck/") ? instance.action.icon.replace("opendeck", "") : getWebserverUrl(instance.action.icon)) : "";
 

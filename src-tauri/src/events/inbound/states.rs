@@ -1,7 +1,8 @@
 use super::ContextAndPayloadEvent;
 
 use crate::events::frontend::instances::update_state;
-use crate::store::profiles::{acquire_locks_mut, get_instance_mut, mark_profile_stale};
+use crate::shared::{ActionContext, DEVICES};
+use crate::store::profiles::{LocksMut, acquire_locks_mut, get_device_profiles, get_instance_mut, mark_profile_stale};
 
 use anyhow::bail;
 use serde::Deserialize;
@@ -58,6 +59,7 @@ pub async fn set_title(event: ContextAndPayloadEvent<SetTitlePayload>) -> Result
 			}
 		}
 		update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await?;
+		mirror_identical(&event.context, &mut locks).await;
 	}
 	mark_profile_stale(&event.context.device, &mut locks).await?;
 
@@ -95,6 +97,7 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 			}
 		}
 		update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await?;
+		mirror_identical(&event.context, &mut locks).await;
 	}
 
 	mark_profile_stale(&event.context.device, &mut locks).await?;
@@ -140,8 +143,62 @@ pub async fn set_state(event: ContextAndPayloadEvent<SetStatePayload>) -> Result
 		}
 		instance.current_state = event.payload.state;
 		update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await?;
+		mirror_identical(&event.context, &mut locks).await;
 	}
 	mark_profile_stale(&event.context.device, &mut locks).await?;
 
+	Ok(())
+}
+
+/// Orvo: the same action (same plugin action and same settings) can sit on several pages.
+/// Plugins usually only update the copy on the page that is showing, so copy its live
+/// look (current state, plugin image and title) to every identical copy on the device's
+/// other pages. This keeps e.g. Discord mute ON on every page at once.
+async fn mirror_identical(context: &ActionContext, locks: &mut LocksMut<'_>) {
+	if let Err(error) = mirror_inner(context, locks).await {
+		log::warn!("Failed to sync identical actions: {error}");
+	}
+}
+
+async fn mirror_inner(context: &ActionContext, locks: &mut LocksMut<'_>) -> Result<(), anyhow::Error> {
+	if context.index != 0 {
+		return Ok(());
+	}
+	let Some(source) = get_instance_mut(context, locks).await?.cloned() else { return Ok(()) };
+	let Some(device) = DEVICES.get(&context.device).map(|d| d.clone()) else { return Ok(()) };
+
+	let mut ids = get_device_profiles(&context.device)?;
+	ids.sort();
+	ids.dedup();
+
+	let mut touched = vec![];
+	for id in ids {
+		let Ok(store) = locks.profile_stores.get_profile_store_mut(&device, &id).await else { continue };
+		let mut changed = id == context.profile;
+		for slot in store.value.keys.iter_mut().chain(store.value.sliders.iter_mut()).flatten() {
+			if slot.context == source.context
+				|| slot.action.uuid != source.action.uuid
+				|| slot.action.plugin != source.action.plugin
+				|| slot.settings != source.settings
+				|| slot.states.len() != source.states.len()
+			{
+				continue;
+			}
+			slot.current_state = source.current_state;
+			for (dest, src) in slot.states.iter_mut().zip(source.states.iter()) {
+				dest.image = src.image.clone();
+				dest.text = src.text.clone();
+			}
+			touched.push(slot.context.clone());
+			changed = true;
+		}
+		if changed {
+			store.value.stale = true;
+		}
+	}
+
+	for context in touched {
+		update_state(crate::APP_HANDLE.get().unwrap(), context, locks).await?;
+	}
 	Ok(())
 }

@@ -366,7 +366,7 @@ func labelFor(in *diskInstance) string {
 }
 
 func labelLoop() {
-	t := time.NewTicker(1500 * time.Millisecond)
+	t := time.NewTicker(400 * time.Millisecond)
 	for {
 		select {
 		case <-t.C:
@@ -445,9 +445,12 @@ func flipPage(device string, step int) {
 }
 
 // migrateLayout moves profiles saved with the old 3x4 layout (page keys in a 4th column)
-// to the 3x3 layout, so keys 4-9 keep their actions.
+// to the 3x3 layout, so keys 4-9 keep their actions, then repairs any key whose saved
+// position no longer matches its slot (contexts are "Keypad.<pos>.<idx>" on disk and the
+// key's custom images live in images/<device>/<profile>/Keypad.<pos>.<idx>/).
 func migrateLayout(device string) {
-	root := filepath.Join(configDir(), "profiles", device)
+	cfg := configDir()
+	root := filepath.Join(cfg, "profiles", device)
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
 			return nil
@@ -461,35 +464,100 @@ func migrateLayout(device string) {
 			return nil
 		}
 		keys, ok := prof["keys"].([]any)
-		if !ok || len(keys) != 12 {
+		if !ok {
 			return nil
 		}
-		nk := make([]any, 9)
-		for r := 0; r < 3; r++ {
-			for c := 0; c < 3; c++ {
-				oldPos, newPos := r*4+c, r*3+c
-				inst := keys[oldPos]
-				renumber(inst, oldPos, newPos)
-				nk[newPos] = inst
+		changed := false
+		if len(keys) == 12 {
+			nk := make([]any, 9)
+			for r := 0; r < 3; r++ {
+				for c := 0; c < 3; c++ {
+					nk[r*3+c] = keys[r*4+c]
+				}
 			}
+			keys = nk
+			changed = true
 		}
-		prof["keys"] = nk
+		rel, _ := filepath.Rel(root, path)
+		profileID := strings.TrimSuffix(filepath.ToSlash(rel), ".json")
+		imgDir := filepath.Join(append([]string{cfg, "images", device}, strings.Split(profileID, "/")...)...)
+		type move struct{ from, to string }
+		var moves []move
+		for i, k := range keys {
+			inst, ok := k.(map[string]any)
+			if !ok {
+				continue
+			}
+			old := keyPos(inst["context"])
+			if old < 0 || old == i {
+				continue
+			}
+			// rename this key's image folders (Keypad.<old>.<n> -> Keypad.<i>.<n>)
+			entries, _ := os.ReadDir(imgDir)
+			prefix := fmt.Sprintf("Keypad.%d.", old)
+			for _, e := range entries {
+				if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+					moves = append(moves, move{e.Name(), fmt.Sprintf("Keypad.%d.%s", i, strings.TrimPrefix(e.Name(), prefix))})
+				}
+			}
+			renumber(inst, old, i)
+			changed = true
+		}
+		// two steps through temporary names so swaps never overwrite each other
+		for n, m := range moves {
+			os.Rename(filepath.Join(imgDir, m.from), filepath.Join(imgDir, fmt.Sprintf("orvo-tmp-%d", n)))
+		}
+		for n, m := range moves {
+			dst := filepath.Join(imgDir, m.to)
+			os.RemoveAll(dst)
+			os.Rename(filepath.Join(imgDir, fmt.Sprintf("orvo-tmp-%d", n)), dst)
+		}
+		if !changed {
+			return nil
+		}
+		prof["keys"] = keys
 		if out, err := json.Marshal(prof); err == nil {
-			os.WriteFile(path+".bak-3x4", b, 0o644)
+			if !fileExists(path + ".bak-orvo") {
+				os.WriteFile(path+".bak-orvo", b, 0o644)
+			}
 			os.WriteFile(path, out, 0o644)
-			log.Println("migrated", path, "to 3x3")
+			log.Println("fixed layout of", path)
 		}
 		return nil
 	})
 }
 
-// renumber rewrites "<device>.<profile>.Keypad.<old>.<n>" contexts inside an instance.
+// keyPos reads the position from a context string ("Keypad.4.0" or "dev.profile.Keypad.4.0").
+func keyPos(v any) int {
+	s, ok := v.(string)
+	if !ok {
+		return -1
+	}
+	parts := strings.Split(s, ".")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "Keypad" {
+			if n, err := strconv.Atoi(parts[i+1]); err == nil {
+				return n
+			}
+		}
+	}
+	return -1
+}
+
+// renumber rewrites the position in every "context" inside an instance (children included).
 func renumber(v any, oldPos, newPos int) {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, x := range t {
 			if s, ok := x.(string); ok && k == "context" {
-				t[k] = strings.Replace(s, fmt.Sprintf(".Keypad.%d.", oldPos), fmt.Sprintf(".Keypad.%d.", newPos), 1)
+				parts := strings.Split(s, ".")
+				for i := 0; i+1 < len(parts); i++ {
+					if parts[i] == "Keypad" && parts[i+1] == strconv.Itoa(oldPos) {
+						parts[i+1] = strconv.Itoa(newPos)
+						break
+					}
+				}
+				t[k] = strings.Join(parts, ".")
 			} else {
 				renumber(x, oldPos, newPos)
 			}

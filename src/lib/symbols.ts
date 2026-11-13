@@ -51,21 +51,47 @@ export function symbolUrl(name: string, colour: string): string {
 	const svg =
 		`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 24 24"><!--${MARK_SYMBOL}${name}:${colour}-->` +
 		`<path d="${d}" fill="none" stroke="${colour}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-	return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+	return "data:image/svg+xml;base64," + btoa(svg);
 }
 
 export function blankUrl(): string {
 	const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><!--${MARK_BLANK}--></svg>`;
-	return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+	return "data:image/svg+xml;base64," + btoa(svg);
 }
 
 export type BoxMode = "live" | "symbol" | "word" | "picture";
 
-export function modeOf(image_override: string | null): { mode: BoxMode; symbol?: string; colour?: string } {
-	if (!image_override) return { mode: "live" };
-	const decoded = image_override.startsWith("data:image/svg+xml") ? decodeURIComponent(image_override) : "";
-	const m = decoded.match(/orvo-symbol:([a-z-]+):(#[0-9A-Fa-f]{6})/);
+type ModeInfo = { mode: BoxMode; symbol?: string; colour?: string };
+
+function parse(svgText: string): ModeInfo | null {
+	const m = svgText.match(/orvo-symbol:([a-z-]+):(#[0-9A-Fa-f]{6})/);
 	if (m) return { mode: "symbol", symbol: m[1], colour: m[2] };
-	if (decoded.includes(MARK_BLANK)) return { mode: "word" };
+	if (svgText.includes(MARK_BLANK)) return { mode: "word" };
+	return null;
+}
+
+// Quick check from a data URL (right after editing).
+export function modeOf(image_override: string | null): ModeInfo {
+	if (!image_override) return { mode: "live" };
+	if (image_override.startsWith("data:image/svg+xml")) {
+		const body = image_override.split(",")[1] ?? "";
+		let text = "";
+		try {
+			text = image_override.includes(";base64,") ? atob(body) : decodeURIComponent(body);
+		} catch {}
+		return parse(text) ?? { mode: "picture" };
+	}
 	return { mode: "picture" };
+}
+
+// After a restart the app stores images as files, so read the saved SVG to find the symbol.
+export async function modeOfAsync(image_override: string | null, url: (path: string) => string): Promise<ModeInfo> {
+	const quick = modeOf(image_override);
+	if (!image_override || image_override.startsWith("data:") || !image_override.toLowerCase().endsWith(".svg")) return quick;
+	try {
+		const text = await (await fetch(url(image_override))).text();
+		return parse(text) ?? quick;
+	} catch {
+		return quick;
+	}
 }

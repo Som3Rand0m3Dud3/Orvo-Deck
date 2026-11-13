@@ -1,6 +1,6 @@
 [package]
 name = "opendeck"
-version = "0.2.0"
+version = "0.2.1"
 description = "Use stream controllers"
 authors = ["Aman Khanna (nekename)"]
 license = "GPL-3.0-or-later"
