@@ -2,7 +2,7 @@
 	import type { ActionInstance } from "$lib/ActionInstance";
 
 	import { t } from "$lib/i18n";
-	import { renderImage, resizeImage } from "$lib/rendererHelper";
+	import { renderImage, resizeImage, wantsVolumeBadge } from "$lib/rendererHelper";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { onMount } from "svelte";
@@ -73,7 +73,7 @@
 	$: invoke("set_state", { context: instance.context, index: state, state: instance.states[state] });
 
 	let canvas: HTMLCanvasElement;
-	$: renderImage(canvas, null, instance.states[state], instance.action.states[state]?.image ?? instance.action.icon, false, false, true, false, false, 0);
+	$: renderImage(canvas, null, instance.states[state], instance.action.states[state]?.image ?? instance.action.icon, false, false, true, false, false, 0, wantsVolumeBadge(instance.action.uuid, instance.states[state].image_override));
 </script>
 
 <svelte:window
@@ -124,7 +124,8 @@
 			>
 				<canvas
 					bind:this={canvas}
-					class="bg-black border border-neutral-600 rounded-xl cursor-pointer"
+					class="border border-neutral-600 rounded-xl cursor-pointer"
+					style:background="#181c18"
 					width={144}
 					height={144}
 					style={`transform: scale(${128 / 144}); margin: ${(128 - 144) / 2}px;`}

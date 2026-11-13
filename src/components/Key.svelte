@@ -11,7 +11,7 @@
 
 	import { t } from "$lib/i18n";
 	import { copiedItem, inspectedInstance, inspectedParentAction, openContextMenu } from "$lib/propertyInspector";
-	import { CanvasLock, renderImage } from "$lib/rendererHelper";
+	import { CanvasLock, renderImage, wantsVolumeBadge } from "$lib/rendererHelper";
 	import { settings } from "$lib/settings";
 
 	import { invoke } from "@tauri-apps/api/core";
@@ -197,7 +197,7 @@
 			const unlock = await lock.lock();
 			try {
 				let fallback = sl.action.states[sl.current_state]?.image ?? sl.action.icon;
-				if (state && canvas) await renderImage(canvas, context, state, fallback, showOk, showAlert, true, active, pressed, $settings?.rotation);
+				if (state && canvas) await renderImage(canvas, context, state, fallback, showOk, showAlert, true, active, pressed, $settings?.rotation, wantsVolumeBadge(sl.action.uuid, state.image_override));
 			} finally {
 				unlock();
 			}
@@ -229,7 +229,7 @@
 		class:outline-solid={active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
 		class:rounded-full!={context?.controller == "Encoder" && !square}
 		class:rounded-lg!={context?.controller == "Infobar"}
-		class:bg-black={slot != null}
+		style:background={slot != null ? "#181c18" : undefined}
 		{width}
 		{height}
 		draggable={slot != null}

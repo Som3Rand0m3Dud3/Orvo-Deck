@@ -4,7 +4,7 @@
 	import type { ActionInstance } from "$lib/ActionInstance";
 	import type { Profile } from "$lib/Profile";
 
-	import { renderImage } from "$lib/rendererHelper";
+	import { renderImage, wantsVolumeBadge } from "$lib/rendererHelper";
 	import { settings } from "$lib/settings";
 
 	import { invoke } from "@tauri-apps/api/core";
@@ -30,8 +30,18 @@
 		const state = instance.states[index];
 		if (!state) return null;
 		const fallback = instance.action.states[index]?.image ?? instance.action.icon;
-		const canvas = await renderImage(null, null, state, fallback, false, false, true, false, false, $settings?.rotation);
-		return canvas ? canvas.toDataURL("image/jpeg") : null;
+		const canvas = await renderImage(null, null, state, fallback, false, false, true, false, false, $settings?.rotation, wantsVolumeBadge(instance.action.uuid, state.image_override));
+		if (!canvas) return null;
+		// see-through parts show the pad's box colour (JPEG has no transparency)
+		const flat = document.createElement("canvas");
+		flat.width = canvas.width;
+		flat.height = canvas.height;
+		const fc = flat.getContext("2d");
+		if (!fc) return canvas.toDataURL("image/jpeg");
+		fc.fillStyle = "#181c18";
+		fc.fillRect(0, 0, flat.width, flat.height);
+		fc.drawImage(canvas, 0, 0);
+		return flat.toDataURL("image/jpeg");
 	}
 
 	async function run() {

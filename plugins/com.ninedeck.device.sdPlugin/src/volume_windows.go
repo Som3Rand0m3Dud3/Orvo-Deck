@@ -104,8 +104,16 @@ func volWorker() {
 	if err := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED); err != nil {
 		log.Println("audio: CoInitialize:", err)
 	}
+	tick := time.NewTicker(3 * time.Second)
 	for {
 		select {
+		case <-tick.C:
+			// the default speakers / mic may have changed (headphones plugged in): re-open the
+			// controls, but only while the slider is still, so moving it never stutters
+			if time.Since(lastApply) > 1500*time.Millisecond {
+				dropEndpoint(wca.ERender)
+				dropEndpoint(wca.ECapture)
+			}
 		case r := <-volCall:
 			if r.list != nil {
 				refreshSessions(true)
@@ -177,15 +185,10 @@ func flowOf(kind int) uint32 {
 	return wca.ERender
 }
 
-// The default device may change (headphones plugged in): every 2 s, or after an error, re-open.
-var lastCheck time.Time
+var lastApply time.Time
 
 func applyVolume(r *volReq) error {
-	if time.Since(lastCheck) > 2*time.Second {
-		lastCheck = time.Now()
-		dropEndpoint(wca.ERender)
-		dropEndpoint(wca.ECapture)
-	}
+	lastApply = time.Now()
 	switch r.kind {
 	case volMaster, volMic:
 		for try := 0; try < 2; try++ {

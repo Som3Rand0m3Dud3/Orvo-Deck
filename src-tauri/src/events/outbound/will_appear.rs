@@ -48,3 +48,22 @@ pub async fn will_disappear(instance: &ActionInstance, clear_on_device: bool) ->
 
 	Ok(())
 }
+
+/// Orvo: tells the NineDeck plugin that the user deleted one of its actions (not a page change),
+/// so it can put a volume it changed back to how it was.
+pub async fn action_removed(instance: &ActionInstance) -> Result<(), anyhow::Error> {
+	if instance.action.plugin != "com.ninedeck.device.sdPlugin" {
+		return Ok(());
+	}
+	send_to_plugin(
+		&instance.action.plugin,
+		&AppearEvent {
+			event: "orvoActionRemoved",
+			action: instance.action.uuid.clone(),
+			context: instance.context.clone(),
+			device: instance.context.device.clone(),
+			payload: GenericInstancePayload::new(instance),
+		},
+	)
+	.await
+}

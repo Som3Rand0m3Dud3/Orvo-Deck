@@ -39,7 +39,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.9"
+#define FW_VERSION "0.9.1"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -89,6 +89,7 @@ float sliderAvg = -1;      // smoothed reading, 0..4095
 int sliderSent = -1;       // last value sent to the PC, 0..1000
 uint32_t sliderMovedAt = 0;
 bool sliderShown = false;
+int sliderIcon = 0;       // what the slider controls: 0 nothing, 1 speakers, 2 mic, 3 an app
 int pickupMark = -1;       // where to move the slider to take over (0..1000), -1 = none
 char sliderName[24] = "Slider";
 
@@ -200,6 +201,33 @@ void drawArrow(int16_t x, int16_t y, bool left, uint16_t c) {
   }
 }
 
+// Small white icon (about 22x18) centred on cx, cy, at the bottom of the level bar.
+void drawSpeaker(int16_t x, int16_t y, uint16_t c) {   // x, y = left middle
+  frame.fillRect(x, y - 3, 4, 7, c);
+  frame.fillTriangle(x + 3, y, x + 9, y - 7, x + 9, y + 7, c);
+  frame.fillRect(x + 3, y - 3, 3, 7, c);
+}
+void drawSliderIcon(int16_t cx, int16_t cy) {
+  uint16_t c = C_TEXT;
+  if (sliderIcon == 1) {
+    drawSpeaker(cx - 9, cy, c);
+    frame.drawCircleHelper(cx + 1, cy, 5, 0x2 | 0x4, c);
+    frame.drawCircleHelper(cx + 1, cy, 9, 0x2 | 0x4, c);
+  } else if (sliderIcon == 2) {
+    frame.fillRoundRect(cx - 3, cy - 9, 7, 11, 3, c);
+    frame.drawCircleHelper(cx, cy - 2, 6, 0x4 | 0x8, c);
+    frame.drawFastHLine(cx - 6, cy - 2, 2, c);
+    frame.drawFastHLine(cx + 5, cy - 2, 2, c);
+    frame.drawFastVLine(cx, cy + 4, 4, c);
+    frame.drawFastHLine(cx - 4, cy + 8, 9, c);
+  } else if (sliderIcon == 3) {
+    frame.drawRoundRect(cx - 11, cy - 9, 22, 18, 3, c);
+    frame.drawFastHLine(cx - 11, cy - 5, 22, c);
+    drawSpeaker(cx - 6, cy + 2, c);
+    frame.drawCircleHelper(cx + 3, cy + 2, 4, 0x2 | 0x4, c);
+  }
+}
+
 void composePanel() {
   frame.fillRect(PX, 0, SW - PX, SH, C_BG);
   for (int k = 0; k < 2; k++) {
@@ -228,6 +256,7 @@ void composePanel() {
   frame.getTextBounds(num, 0, 0, &x1, &y1, &w, &h);
   frame.setCursor(bx + (bw - (int)w) / 2, by + 8);
   frame.print(num);
+  drawSliderIcon(bx + bw / 2, by + bh - 16);
   // (space under the right page key is kept for a second slider)
 
 }
@@ -398,6 +427,10 @@ void handleSerial() {
     } else if (buf[0] == 'G') {
       pickupMark = atoi(buf + 1);
       if (pickupMark > 1000) pickupMark = 1000;
+      composePanel();
+      push(PX, GY + PKH, SW - PX, SH - (GY + PKH));
+    } else if (buf[0] == 'Y') {                       // icon of what the slider controls
+      sliderIcon = atoi(buf + 1);
       composePanel();
       push(PX, GY + PKH, SW - PX, SH - (GY + PKH));
     } else if (buf[0] == 'R') {

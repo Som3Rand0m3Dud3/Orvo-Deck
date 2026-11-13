@@ -15,7 +15,7 @@ pub async fn set_settings(event: super::ContextAndPayloadEvent<serde_json::Value
 	}
 	drop(locks);
 	if event.context.controller == "Encoder" && crate::events::frontend::pad::slider_locked(&event.context.device) {
-		let _ = crate::events::frontend::pad::orvo_sync_slider(event.context.device.clone(), event.context.profile.clone()).await;
+		let _ = crate::events::frontend::pad::orvo_slider_changed(event.context.device.clone(), event.context.profile.clone()).await;
 	}
 
 	Ok(())

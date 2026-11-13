@@ -83,57 +83,181 @@ pub fn orvo_take_update_marker() -> bool {
 	present
 }
 
-/// Slider lock: copy the slider's action (and its settings) from `profile` to every other page of the
-/// device, so the slider does the same thing on all pages. An empty slider empties it everywhere.
-#[command]
-pub async fn orvo_sync_slider(device: String, profile: String) -> Result<(), Error> {
-	use crate::store::profiles::{acquire_locks_mut, get_slot_mut};
-	let profiles = crate::store::profiles::get_device_profiles(&device)?;
-	let mut locks = acquire_locks_mut().await;
-	let src_ctx = crate::shared::Context { device: device.clone(), profile: profile.clone(), controller: "Encoder".into(), position: 0 };
-	let source = get_slot_mut(&src_ctx, &mut locks).await?.clone();
-	let Some(dev) = crate::shared::DEVICES.get(&device).map(|d| d.clone()) else { return Ok(()) };
-	for other in profiles.into_iter().filter(|p| *p != profile) {
-		let copy = source.clone().map(|mut inst| {
-			inst.context.profile = other.clone();
-			if let Some(children) = &mut inst.children {
-				for c in children.iter_mut() {
-					c.context.profile = other.clone();
-				}
+// ---------- Slider lock (overlay) ----------
+// Locked: one "global" slider action sits on top of every page. Each page's own slider action is kept
+// underneath (the stash) and comes back when the slider is unlocked. Saved per device in
+// profiles/<device>.orvo-slider.json.
+
+use crate::shared::ActionInstance;
+use std::collections::HashMap;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct SliderOverlay {
+	locked: bool,
+	global: Option<ActionInstance>,
+	#[serde(default)]
+	stash: HashMap<String, Option<ActionInstance>>,
+}
+
+impl Default for SliderOverlay {
+	fn default() -> Self {
+		Self { locked: true, global: None, stash: HashMap::new() }
+	}
+}
+
+static OVERLAYS: std::sync::LazyLock<tokio::sync::Mutex<HashMap<String, SliderOverlay>>> = std::sync::LazyLock::new(Default::default);
+
+fn overlay_path(device: &str) -> std::path::PathBuf {
+	crate::shared::config_dir().join("profiles").join(format!("{device}.orvo-slider.json"))
+}
+
+fn load_overlay(map: &mut HashMap<String, SliderOverlay>, device: &str) -> SliderOverlay {
+	map.entry(device.to_owned())
+		.or_insert_with(|| std::fs::read(overlay_path(device)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default())
+		.clone()
+}
+
+fn save_overlay(map: &mut HashMap<String, SliderOverlay>, device: &str, ov: SliderOverlay) {
+	if let Ok(b) = serde_json::to_vec_pretty(&ov) {
+		let _ = std::fs::write(overlay_path(device), b);
+	}
+	map.insert(device.to_owned(), ov);
+}
+
+fn for_profile(inst: &Option<ActionInstance>, profile: &str) -> Option<ActionInstance> {
+	inst.clone().map(|mut i| {
+		i.context.profile = profile.to_owned();
+		if let Some(children) = &mut i.children {
+			for c in children.iter_mut() {
+				c.context.profile = profile.to_owned();
 			}
-			inst
-		});
-		let store = locks.profile_stores.get_profile_store_mut(&dev, &other).await?;
-		if store.value.sliders.is_empty() {
-			continue;
 		}
-		let same = match (&store.value.sliders[0], &copy) {
-			(Some(a), Some(b)) => a.action.uuid == b.action.uuid && a.settings == b.settings,
-			(None, None) => true,
-			_ => false,
-		};
-		if !same {
-			store.value.sliders[0] = copy;
+		i
+	})
+}
+
+fn same_instance(a: &Option<ActionInstance>, b: &Option<ActionInstance>) -> bool {
+	match (a, b) {
+		(Some(a), Some(b)) => a.action.uuid == b.action.uuid && a.settings == b.settings && a.states.len() == b.states.len(),
+		(None, None) => true,
+		_ => false,
+	}
+}
+
+/// Put `slot_for(profile)` into every page's slider slot. Pages not stashed yet are stashed first
+/// when `stash_first` is set. The page on the pad gets willDisappear / willAppear for what changed.
+async fn apply_slider(device: &str, ov: &mut SliderOverlay, unlocking: bool) -> Result<(), anyhow::Error> {
+	use crate::store::profiles::acquire_locks_mut;
+	let profiles = crate::store::profiles::get_device_profiles(device)?;
+	let Some(dev) = crate::shared::DEVICES.get(device).map(|d| d.clone()) else { return Ok(()) };
+	let mut gone = vec![];
+	let mut came = vec![];
+	{
+		let mut locks = acquire_locks_mut().await;
+		let selected = locks.device_stores.get_selected_profile(device)?;
+		for p in profiles {
+			let store = locks.profile_stores.get_profile_store_mut(&dev, &p).await?;
+			if store.value.sliders.is_empty() {
+				continue;
+			}
+			let want = if unlocking {
+				match ov.stash.remove(&p) {
+					Some(own) => for_profile(&own, &p),
+					None => continue,
+				}
+			} else {
+				ov.stash.entry(p.clone()).or_insert_with(|| store.value.sliders[0].clone());
+				for_profile(&ov.global, &p)
+			};
+			if same_instance(&store.value.sliders[0], &want) {
+				continue;
+			}
+			let old = std::mem::replace(&mut store.value.sliders[0], want.clone());
 			store.save()?;
+			if p == selected {
+				gone.extend(old);
+				came.extend(want);
+			}
 		}
+	}
+	for i in &gone {
+		let _ = crate::events::outbound::will_appear::will_disappear(i, true).await;
+	}
+	for i in &came {
+		let _ = crate::events::outbound::will_appear::will_appear(i).await;
 	}
 	Ok(())
 }
 
-/// Devices whose slider is locked (same action on every page). Set by the app; locked by default.
-static UNLOCKED_SLIDERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+async fn slot_of(device: &str, profile: &str) -> Result<Option<ActionInstance>, anyhow::Error> {
+	let locks = crate::store::profiles::acquire_locks().await;
+	let ctx = crate::shared::Context { device: device.to_owned(), profile: profile.to_owned(), controller: "Encoder".into(), position: 0 };
+	Ok(crate::store::profiles::get_slot(&ctx, &locks).await?.clone())
+}
 
 pub fn slider_locked(device: &str) -> bool {
-	device.starts_with("nd-") && !UNLOCKED_SLIDERS.lock().unwrap().contains(device)
+	device.starts_with("nd-") && OVERLAYS.try_lock().map(|m| m.get(device).map(|o| o.locked).unwrap_or(true)).unwrap_or(true)
 }
 
 #[command]
+pub async fn orvo_slider_locked(device: String) -> Result<bool, Error> {
+	let mut map = OVERLAYS.lock().await;
+	Ok(load_overlay(&mut map, &device).locked)
+}
+
+/// Lock / unlock the slider. Locking brings back the last global action (or, the first time, uses
+/// this page's slider). Unlocking gives every page its own slider action back.
+#[command]
 pub async fn orvo_slider_lock(device: String, profile: String, locked: bool) -> Result<(), Error> {
+	let mut map = OVERLAYS.lock().await;
+	let mut ov = load_overlay(&mut map, &device);
 	if locked {
-		UNLOCKED_SLIDERS.lock().unwrap().remove(&device);
-		orvo_sync_slider(device, profile).await
-	} else {
-		UNLOCKED_SLIDERS.lock().unwrap().insert(device);
-		Ok(())
+		if ov.global.is_none() {
+			ov.global = slot_of(&device, &profile).await?;
+		}
+		ov.locked = true;
+		apply_slider(&device, &mut ov, false).await?;
+	} else if ov.locked {
+		ov.locked = false;
+		apply_slider(&device, &mut ov, true).await?;
+		ov.stash.clear();
 	}
+	save_overlay(&mut map, &device, ov);
+	Ok(())
+}
+
+/// The slider on `profile` changed (action placed, removed or its settings changed). While locked,
+/// that becomes the global action for every page.
+#[command]
+pub async fn orvo_slider_changed(device: String, profile: String) -> Result<(), Error> {
+	let mut map = OVERLAYS.lock().await;
+	let mut ov = load_overlay(&mut map, &device);
+	if !ov.locked {
+		return Ok(());
+	}
+	let now = slot_of(&device, &profile).await?;
+	if same_instance(&now, &for_profile(&ov.global, &profile)) && ov.stash.contains_key(&profile) {
+		return Ok(());
+	}
+	ov.global = now;
+	apply_slider(&device, &mut ov, false).await?;
+	save_overlay(&mut map, &device, ov);
+	Ok(())
+}
+
+/// A page was opened (maybe a new one): while locked, make sure it shows the global slider.
+#[command]
+pub async fn orvo_slider_refresh(device: String) -> Result<(), Error> {
+	let mut map = OVERLAYS.lock().await;
+	let mut ov = load_overlay(&mut map, &device);
+	if ov.locked {
+		if ov.global.is_none() && ov.stash.is_empty() {
+			// first time: the slider on the open page becomes the one on top
+			let selected = crate::store::profiles::acquire_locks_mut().await.device_stores.get_selected_profile(&device)?;
+			ov.global = slot_of(&device, &selected).await?;
+		}
+		apply_slider(&device, &mut ov, false).await?;
+		save_overlay(&mut map, &device, ov);
+	}
+	Ok(())
 }

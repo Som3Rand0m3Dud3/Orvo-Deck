@@ -297,6 +297,9 @@ func tryOpen(portName, serialNo string) {
 	padsMu.Unlock()
 
 	migrateLayout(p.id)
+	slMu.Lock()
+	delete(slNameSent, p.id) // send the slider name / icon again
+	slMu.Unlock()
 	p.write("H 0")
 	if p.box > 0 {
 		p.page = selectedProfile(p.id)
@@ -838,7 +841,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.9"
+const latestFirmware = "0.9.1"
 
 var (
 	updMu    sync.Mutex
@@ -1091,10 +1094,12 @@ func toRGB565(dataURL string, size int) []byte {
 			var r, g, bl, n uint32
 			for yy := y0; yy < y1; yy++ {
 				for xx := x0; xx < x1; xx++ {
-					cr, cg, cb, _ := src.At(sb.Min.X+xx, sb.Min.Y+yy).RGBA()
-					r += cr >> 8
-					g += cg >> 8
-					bl += cb >> 8
+					// see-through parts show the pad's box colour (like the app), not black
+					cr, cg, cb, ca := src.At(sb.Min.X+xx, sb.Min.Y+yy).RGBA()
+					t := 255 - ca>>8
+					r += cr>>8 + t*24/255
+					g += cg>>8 + t*28/255
+					bl += cb>>8 + t*24/255
 					n++
 				}
 			}

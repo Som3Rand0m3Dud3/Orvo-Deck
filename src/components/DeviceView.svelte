@@ -82,27 +82,41 @@
 	$: isNineDeck = device.id.startsWith("nd-");
 	let sliderValue: number | null = null;
 
-	// Slider lock: locked (default) = the slider does the same thing on every page.
+	// Slider lock: locked (default) = one slider action on top of every page; each page's own
+	// slider action is kept underneath and comes back when unlocked.
 	let sliderLocked = true;
-	$: sliderLockKey = `orvo-slider-lock-${device.id}`;
-	$: try {
-		sliderLocked = localStorage.getItem(sliderLockKey) != "0";
-	} catch {
-		sliderLocked = true;
+	let lockDevice = "";
+	$: if (isNineDeck && device.id != lockDevice) {
+		lockDevice = device.id;
+		invoke("orvo_slider_locked", { device: device.id }).then((v) => (sliderLocked = v as boolean)).catch(() => {});
 	}
-	function toggleSliderLock() {
-		sliderLocked = !sliderLocked;
+	async function reloadProfile() {
 		try {
-			localStorage.setItem(sliderLockKey, sliderLocked ? "1" : "0");
+			const fresh: Profile = await invoke("get_selected_profile", { device: device.id });
+			if (fresh.id == profile.id) {
+				profile = fresh;
+				lastSliderSync = `${profile.id}|${sliderSig(profile)}`;
+			}
 		} catch {}
-		invoke("orvo_slider_lock", { device: device.id, profile: profile.id, locked: sliderLocked });
 	}
+	async function toggleSliderLock() {
+		sliderLocked = !sliderLocked;
+		await invoke("orvo_slider_lock", { device: device.id, profile: profile.id, locked: sliderLocked });
+		await reloadProfile();
+	}
+	const sliderSig = (p: Profile) => {
+		const s = p.sliders?.[0];
+		return s ? `${s.action.uuid}` : "";
+	};
 	let lastSliderSync = "";
 	$: if (isNineDeck && profile && device.encoders > 0) {
-		const key = `${sliderLocked}|${profile.id}|${profile.sliders[0]?.action?.uuid ?? ""}`;
+		const pageId = profile.id;
+		const key = `${pageId}|${sliderSig(profile)}`;
 		if (key != lastSliderSync) {
+			const samePage = lastSliderSync.startsWith(pageId + "|");
 			lastSliderSync = key;
-			invoke("orvo_slider_lock", { device: device.id, profile: profile.id, locked: sliderLocked });
+			if (samePage) invoke("orvo_slider_changed", { device: device.id, profile: pageId }).catch(() => {});
+			else invoke("orvo_slider_refresh", { device: device.id }).then(reloadProfile).catch(() => {});
 		}
 	}
 	const unlistenSlider = listen("pad_slider", ({ payload }: { payload: { device: string; value: number } }) => {
@@ -255,48 +269,69 @@
 			{/each}
 		</div>
 
-		{#if isNineDeck && device.encoders > 0}
-			<div class="flex flex-col gap-3" role="row" aria-label="Sliders">
-				{#each { length: device.encoders } as _, i}
-					<div
-						class="relative flex flex-col items-center justify-center w-[148px] rounded-2xl border border-neutral-600 bg-neutral-800 overflow-hidden"
-						style={`height: ${Math.round(2.5 * 132)}px`}
-						role="gridcell"
-						aria-label="Slider {i + 1}{sliderValue != null ? `, ${Math.round(sliderValue / 10)}%` : ''}"
+		{#if isNineDeck}
+			<!-- Same layout as the pad's screen: page keys at the top, the slider's level bar under ◀,
+			     the space under ▶ kept for a second slider. -->
+			<div class="flex flex-row gap-3" aria-label="Page keys and slider">
+				<div class="flex flex-col gap-3 w-[148px]">
+					<button
+						class="flex items-center justify-center h-[128px] rounded-2xl bg-neutral-800 border border-neutral-600 text-3xl text-neutral-200 hover:border-blue-500 transition-colors"
+						aria-label="Previous page"
+						title="Previous page"
+						on:click|stopPropagation={() => flip(-1)}>◀</button
 					>
-						<div class="absolute left-0 right-0 bottom-0 transition-[height] duration-75" style={`height: ${(sliderValue ?? 0) / 10}%; background: var(--orvo-accent); opacity: 0.28`}></div>
-						<div class="absolute left-1/2 -translate-x-1/2 top-3 bottom-3 w-1.5 rounded-full bg-neutral-600"></div>
-						<span class="absolute top-2 left-0 right-0 text-center text-xs font-semibold text-neutral-200 tabular-nums">{sliderValue != null ? `${Math.round(sliderValue / 10)}%` : "Slider"}</span>
-						<button
-							class="absolute top-1.5 right-1.5 z-10 p-1 rounded-md hover:bg-neutral-700 {sliderLocked ? 'text-neutral-200' : 'text-neutral-500'}"
-							title={sliderLocked ? "Locked: same on every page. Click to set it per page." : "Per page: each page has its own slider action. Click to lock it to all pages."}
-							aria-label={sliderLocked ? "Slider locked to all pages" : "Slider set per page"}
-							aria-pressed={sliderLocked}
-							on:click|stopPropagation={toggleSliderLock}
+					{#each { length: Math.min(device.encoders, 1) } as _, i}
+						<div
+							class="relative flex flex-col items-center justify-center rounded-2xl border border-neutral-600 bg-neutral-800 overflow-hidden"
+							style="height: 256px"
+							role="gridcell"
+							aria-label="Slider {i + 1}{sliderValue != null ? `, ${Math.round(sliderValue / 10)}%` : ''}"
 						>
-							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-								<rect x="4" y="11" width="16" height="10" rx="2" />
-								{#if sliderLocked}<path d="M8 11V7a4 4 0 0 1 8 0v4" />{:else}<path d="M8 11V7a4 4 0 0 1 7.5-2" />{/if}
-							</svg>
-						</button>
-						<Key
-							context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
-							bind:inslot={profile.sliders[i]}
-							on:dragover={handleDragOver}
-							on:drop={(event) => handleDrop(event, "Encoder", i)}
-							on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
-							{handlePaste}
-							square={true}
-							label="Slider {i + 1}"
-							tabindex={-1}
-						/>
-					</div>
-				{/each}
+							<div class="absolute left-0 right-0 bottom-0 transition-[height] duration-75" style={`height: ${(sliderValue ?? 0) / 10}%; background: var(--orvo-accent); opacity: 0.28`}></div>
+							<span class="absolute top-2 left-0 right-0 text-center text-lg font-bold text-neutral-100 tabular-nums">{sliderValue != null ? Math.round(sliderValue / 10) : "–"}</span>
+							<button
+								class="absolute top-1.5 right-1.5 z-10 p-1 rounded-md hover:bg-neutral-700 {sliderLocked ? 'text-neutral-200' : 'text-neutral-500'}"
+								title={sliderLocked ? "Locked: this slider action is on top of every page. Click to unlock (each page uses its own)." : "Unlocked: each page has its own slider action. Click to lock one on top of all pages."}
+								aria-label={sliderLocked ? "Slider locked to all pages" : "Slider set per page"}
+								aria-pressed={sliderLocked}
+								on:click|stopPropagation={toggleSliderLock}
+							>
+								<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+									<rect x="4" y="11" width="16" height="10" rx="2" />
+									{#if sliderLocked}<path d="M8 11V7a4 4 0 0 1 8 0v4" />{:else}<path d="M8 11V7a4 4 0 0 1 7.5-2" />{/if}
+								</svg>
+							</button>
+							<div class="mt-6">
+								<Key
+									context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
+									bind:inslot={profile.sliders[i]}
+									on:dragover={handleDragOver}
+									on:drop={(event) => handleDrop(event, "Encoder", i)}
+									on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
+									{handlePaste}
+									square={true}
+									label="Slider {i + 1}"
+									tabindex={-1}
+								/>
+							</div>
+						</div>
+					{/each}
+				</div>
+				<div class="flex flex-col gap-3 w-[148px]">
+					<button
+						class="flex items-center justify-center h-[128px] rounded-2xl bg-neutral-800 border border-neutral-600 text-3xl text-neutral-200 hover:border-blue-500 transition-colors"
+						aria-label="Next page"
+						title="Next page"
+						on:click|stopPropagation={() => flip(1)}>▶</button
+					>
+					<div class="rounded-2xl border border-dashed border-neutral-700" style="height: 256px" title="Room for a second slider"></div>
+				</div>
 			</div>
 		{/if}
 		</div>
 
-		<div class="flex flex-row justify-between" role="row" style={`width: ${keypadRowWidth}px;`} class:hidden={isNineDeck}>
+		{#if !isNineDeck}
+		<div class="flex flex-row justify-between" role="row" style={`width: ${keypadRowWidth}px;`}>
 			{#each { length: device.encoders } as _, i}
 				<Key
 					context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
@@ -311,6 +346,7 @@
 				/>
 			{/each}
 		</div>
+		{/if}
 
 		<div class="flex flex-row items-center" role="row">
 			{#each { length: device.touchpoints } as _, i}
@@ -348,7 +384,7 @@
 		</div>
 		</div>
 
-		{#if pages.length > 0}
+		{#if pages.length > 0 && !isNineDeck}
 			<div class="flex items-center justify-center gap-3 mt-5" role="group" aria-label="Page keys">
 				<button
 					class="flex items-center justify-center w-14 h-12 rounded-xl bg-neutral-900 border border-neutral-700 text-neutral-200 hover:border-blue-500 transition-colors"

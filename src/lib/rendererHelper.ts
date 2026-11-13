@@ -1,3 +1,4 @@
+import { modeOf } from "$lib/symbols";
 import type { ActionState } from "./ActionState.ts";
 import type { Context } from "./Context.ts";
 
@@ -50,6 +51,7 @@ export async function renderImage(
 	active: boolean,
 	pressed: boolean,
 	rotation?: number,
+	badge?: boolean,
 ) {
 	// Create canvas
 	let scale = 1;
@@ -105,6 +107,8 @@ export async function renderImage(
 		context.clearRect(0, 0, canvas.width, canvas.height);
 		showAlert = true;
 	}
+
+	if (badge) drawVolumeBadge(context, canvas.width);
 
 	// Draw text
 	if (state.show) {
@@ -213,4 +217,41 @@ export async function resizeImage(source: string): Promise<string | undefined> {
 	context.drawImage(image, xOffset, yOffset, xScaled, yScaled);
 
 	return canvas.toDataURL();
+}
+
+// Orvo: App volume with the user's own picture gets a small speaker in the bottom-right corner,
+// so it's clear the box controls that app's sound.
+export function wantsVolumeBadge(actionUuid: string | undefined, imageOverride: string | null | undefined): boolean {
+	return actionUuid == "com.ninedeck.device.appvolume" && !!imageOverride && modeOf(imageOverride).mode == "picture";
+}
+
+function drawVolumeBadge(context: CanvasRenderingContext2D, size: number) {
+	const k = size / 144;
+	const cx = size - 30 * k,
+		cy = size - 30 * k;
+	context.save();
+	context.fillStyle = "rgba(10, 12, 16, 0.82)";
+	context.beginPath();
+	context.arc(cx, cy, 24 * k, 0, Math.PI * 2);
+	context.fill();
+	context.fillStyle = "white";
+	context.strokeStyle = "white";
+	context.beginPath();
+	context.moveTo(cx - 14 * k, cy - 5 * k);
+	context.lineTo(cx - 7 * k, cy - 5 * k);
+	context.lineTo(cx + 1 * k, cy - 12 * k);
+	context.lineTo(cx + 1 * k, cy + 12 * k);
+	context.lineTo(cx - 7 * k, cy + 5 * k);
+	context.lineTo(cx - 14 * k, cy + 5 * k);
+	context.closePath();
+	context.fill();
+	context.lineWidth = 3 * k;
+	context.lineCap = "round";
+	context.beginPath();
+	context.arc(cx + 3 * k, cy, 7 * k, -0.9, 0.9);
+	context.stroke();
+	context.beginPath();
+	context.arc(cx + 3 * k, cy, 13 * k, -0.9, 0.9);
+	context.stroke();
+	context.restore();
 }

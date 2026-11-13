@@ -168,6 +168,7 @@ pub async fn remove_instance(context: ActionContext) -> Result<(), Error> {
 
 	if instance.context == context {
 		let _ = crate::events::outbound::will_appear::will_disappear(instance, true).await;
+		let _ = crate::events::outbound::will_appear::action_removed(instance).await;
 		if let Some(children) = &instance.children {
 			for child in children {
 				let _ = crate::events::outbound::will_appear::will_disappear(child, true).await;
@@ -181,6 +182,7 @@ pub async fn remove_instance(context: ActionContext) -> Result<(), Error> {
 		for (index, child) in children.iter().enumerate() {
 			if child.context == context {
 				let _ = crate::events::outbound::will_appear::will_disappear(child, true).await;
+				let _ = crate::events::outbound::will_appear::action_removed(child).await;
 				let _ = remove_dir_all(instance_images_dir(&child.context)).await;
 				children.remove(index);
 

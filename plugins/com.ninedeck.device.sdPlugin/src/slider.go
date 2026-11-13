@@ -103,6 +103,65 @@ func sliderName(a *sliderAction) string {
 	return "Slider"
 }
 
+func slActionFor(device string) *sliderAction {
+	slMu.Lock()
+	defer slMu.Unlock()
+	return slActions[device]
+}
+
+// Icon the pad draws at the bottom of its level bar: 1 speakers, 2 mic, 3 an app.
+func sliderIconOf(a *sliderAction) int {
+	if a == nil {
+		return 0
+	}
+	switch a.action {
+	case actMaster:
+		return 1
+	case actMic:
+		return 2
+	case actApp:
+		return 3
+	}
+	return 0
+}
+
+// The level each thing had before the slider first changed it, so removing the slider action
+// puts it back (an app turned down doesn't stay quiet forever).
+var origLevel = map[string]float32{} // targetKey -> level
+
+func rememberOriginal(a *sliderAction) {
+	key := targetKey(a)
+	slMu.Lock()
+	_, have := origLevel[key]
+	slMu.Unlock()
+	if have {
+		return
+	}
+	if lvl, ok := levelOf(a); ok {
+		slMu.Lock()
+		if _, have := origLevel[key]; !have {
+			origLevel[key] = lvl
+		}
+		slMu.Unlock()
+	}
+}
+
+// actionRemoved: the user deleted a slider action (not just a page change): restore the level.
+func actionRemoved(device, action string, settings map[string]any) {
+	a := &sliderAction{action: action, settings: settings}
+	key := targetKey(a)
+	slMu.Lock()
+	lvl, have := origLevel[key]
+	delete(origLevel, key)
+	if slKey[device] == key {
+		delete(slKey, device)
+	}
+	slMu.Unlock()
+	if have {
+		applyLevel(a, lvl)
+	}
+}
+
 func updateSliderName(device string) {
 	p := padByID(device)
 	if p == nil || sliderCount(p) == 0 {
@@ -115,6 +174,9 @@ func updateSliderName(device string) {
 	slMu.Unlock()
 	if !same {
 		p.write("N1 " + name)
+		if !newer("0.9.1", p.fw) {
+			p.write(fmt.Sprintf("Y%d", sliderIconOf(slActionFor(device))))
+		}
 	}
 }
 
@@ -165,6 +227,7 @@ func sliderMoved(p *pad, v int) {
 		return
 	}
 	if a != nil {
+		rememberOriginal(a)
 		applyLevel(a, float32(v)/1000)
 		return
 	}
@@ -223,7 +286,10 @@ func handleActionEvent(msg []byte) {
 				go startPickup(p, a)
 			}
 		}
-		send(map[string]any{"event": "setTitle", "context": ev.Context, "payload": map[string]any{"title": sliderName(a)}})
+		send(map[string]any{"event": "setTitle", "context": ev.Context, "payload": map[string]any{"title": ""}}) // no words unless the user adds them
+	case "orvoActionRemoved":
+		go actionRemoved(ev.Device, ev.Action, ev.Payload.Settings)
+		return
 	case "propertyInspectorDidAppear", "sendToPlugin":
 		if ev.Action == actApp {
 			go func() {
