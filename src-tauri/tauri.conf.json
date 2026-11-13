@@ -26,9 +26,9 @@
 				}
 			}
 		},
-		"publisher": "Aman Khanna (nekename)",
-		"shortDescription": "Use stream controllers",
-		"longDescription": "OpenDeck is a desktop application for using stream controller devices like the Elgato Stream Deck. OpenDeck supports plugins made for the original Stream Deck SDK, allowing many plugins made for the Elgato software ecosystem to be used.",
+		"publisher": "Orvo",
+		"shortDescription": "Control app for Orvo devices and stream decks",
+		"longDescription": "Orvo Studio is a customizable control app for Orvo macro pads and stream controller devices. Based on OpenDeck by Aman Khanna (nekename).",
 		"category": "Productivity",
 		"icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
 		"macOS": {
@@ -36,20 +36,20 @@
 			"signingIdentity": "-"
 		}
 	},
-	"productName": "OpenDeck",
-	"mainBinaryName": "opendeck",
-	"identifier": "opendeck",
+	"productName": "Orvo Studio",
+	"mainBinaryName": "orvo-studio",
+	"identifier": "com.orvo.studio",
 	"plugins": {
 		"deep-link": {
 			"desktop": {
-				"schemes": ["opendeck", "openaction", "streamdeck"]
+				"schemes": ["orvo", "openaction", "streamdeck"]
 			}
 		}
 	},
 	"app": {
 		"windows": [
 			{
-				"title": "OpenDeck",
+				"title": "Orvo Studio",
 				"fullscreen": false,
 				"resizable": true,
 				"width": 800,

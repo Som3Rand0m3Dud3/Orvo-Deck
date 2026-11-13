@@ -124,6 +124,15 @@ async fn main() {
 				let _ = std::fs::rename(old, app.path().app_config_dir().unwrap());
 			}
 
+			// Orvo: on first launch, bring over an existing OpenDeck setup (profiles, plugins, settings)
+			let orvo_dir = app.path().app_config_dir().unwrap();
+			let opendeck_dir = app.path().config_dir().unwrap().join("opendeck");
+			if !orvo_dir.exists() && opendeck_dir.exists() {
+				if let Err(error) = shared::copy_dir(&opendeck_dir, &orvo_dir) {
+					log::warn!("Failed to import OpenDeck settings: {error}");
+				}
+			}
+
 			let mut settings = store::get_settings();
 			use std::cmp::Ordering;
 			use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -261,9 +270,9 @@ If you have already donated, thank you so much for your support!"#,
 
 			async fn update() -> Result<(), anyhow::Error> {
 				let res = reqwest::Client::new()
-					.get("https://api.github.com/repos/nekename/OpenDeck/releases/latest")
+					.get("https://api.github.com/repos/Som3Rand0m3Dud3/orvo-deck/releases/latest")
 					.header("Accept", "application/vnd.github+json")
-					.header("User-Agent", "OpenDeck")
+					.header("User-Agent", "OrvoStudio")
 					.send()
 					.await?
 					.json::<serde_json::Value>()

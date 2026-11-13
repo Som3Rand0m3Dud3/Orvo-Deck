@@ -1,0 +1,30 @@
+{
+	"Name": "NineDeck",
+	"Description": "Device support for the NineDeck macro pad",
+	"Author": "Khaled Alajmi",
+	"Version": "0.2.0",
+	"Icon": "assets/icon",
+	"Category": "Hardware",
+	"CodePathWin": "ninedeck-win.exe",
+	"CodePathLin": "ninedeck-linux",
+	"OS": [
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		},
+		{
+			"Platform": "linux"
+		},
+		{
+			"Platform": "mac",
+			"MinimumVersion": "11"
+		}
+	],
+	"Actions": [],
+	"DeviceNamespace": "nd",
+	"SDKVersion": 2,
+	"Software": {
+		"MinimumVersion": "6.0"
+	},
+	"CodePathMac": "ninedeck-mac"
+}

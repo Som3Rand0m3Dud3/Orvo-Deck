@@ -12,12 +12,42 @@
 	import { marked } from "marked";
 	import markedAlert from "marked-alert";
 	import { baseUrl } from "marked-base-url";
-	import { onMount } from "svelte";
+	import { onMount, tick } from "svelte";
 
 	export let id: string;
 	export let details: { repository: string; name: string; author: string; download_url: string | undefined; flags?: { ai_assisted?: boolean } };
 	let readme = `<strong>${$t("plugin_details.loading")}</strong>`;
 	let downloadCount = 0;
+
+	let readmeEl: HTMLDivElement;
+
+	// Orvo: make README images load (relative paths, raw HTML <img>, GitHub "blob" links) and hide any that still fail
+	function fixImages(html: string, base: string): string {
+		const doc = new DOMParser().parseFromString(html, "text/html");
+		for (const img of Array.from(doc.querySelectorAll("img"))) {
+			let src = img.getAttribute("src");
+			if (!src) continue;
+			try {
+				src = new URL(src, base).href;
+			} catch {
+				continue;
+			}
+			src = src.replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:blob|raw)\//, "https://raw.githubusercontent.com/$1/$2/").replace(/\?raw=true$/, "");
+			img.setAttribute("src", src);
+			img.setAttribute("loading", "lazy");
+		}
+		return doc.body.innerHTML;
+	}
+
+	$: if (readme && readmeEl) {
+		tick().then(() => {
+			for (const img of Array.from(readmeEl.querySelectorAll("img"))) {
+				const hide = () => (img.style.display = "none");
+				if (img.complete && img.naturalWidth === 0) hide();
+				else img.addEventListener("error", hide, { once: true });
+			}
+		});
+	}
 
 	export let install: () => void;
 	export let close: () => void;
@@ -43,7 +73,8 @@
 			if (response.ok) {
 				marked.use(markedAlert());
 				marked.use(baseUrl(url));
-				return await marked.parse(DOMPurify.sanitize(await response.text()).replace(/<a/g, '<a target="_blank" '));
+				const html = await marked.parse(DOMPurify.sanitize(await response.text()).replace(/<a/g, '<a target="_blank" '));
+				return fixImages(html, url);
 			}
 		}
 		return await marked.parse($t("plugin_details.readme.not_found", { repo }));
@@ -73,7 +104,15 @@
 </script>
 
 <Popup show label={$t("plugin_details.title", { name: details.name })}>
-	<button class="mr-2 my-1 float-right text-xl text-neutral-300" on:click={close} aria-label={$t("settings.close")}>✕</button>
+	<svelte:fragment slot="header">
+		<div class="flex flex-row justify-end">
+			<button
+				class="flex items-center justify-center size-9 text-xl text-neutral-300 hover:text-white hover:bg-neutral-700 transition-colors rounded-lg"
+				on:click={close}
+				aria-label={$t("settings.close")}>✕</button
+			>
+		</div>
+	</svelte:fragment>
 	<div class="flex flex-row items-start">
 		<img src={"https://openactionapi.github.io/plugins/icons/" + id + ".png"} alt={details.name} class="size-48 rounded-2xl" />
 		<div class="flex flex-col justify-center h-48 ml-8">
@@ -125,6 +164,7 @@
 
 	<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
 	<div
+		bind:this={readmeEl}
 		class="mt-4 p-6 plugin-readme text-neutral-300 border-4 border-neutral-600 rounded-xl"
 		on:click={handleReadmeClick}
 		on:keyup={handleReadmeClick}
