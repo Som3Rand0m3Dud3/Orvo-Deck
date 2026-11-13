@@ -9,6 +9,24 @@
 
 	export let instance: ActionInstance;
 	export let showEditor: boolean;
+	// panel: shown inside the right panel (no close button, stacked layout) instead of as a popup
+	export let panel = false;
+
+	// Ctrl+V a picture (copied image) onto the box while the editor is open.
+	function handlePaste(event: ClipboardEvent) {
+		const target = event.target as HTMLElement | null;
+		if (target && (target.tagName == "INPUT" || target.tagName == "TEXTAREA")) return;
+		const item = Array.from(event.clipboardData?.items ?? []).find((i) => i.type.startsWith("image/"));
+		const file = item?.getAsFile();
+		if (!file) return;
+		event.preventDefault();
+		const reader = new FileReader();
+		reader.onload = async () => {
+			const result = reader.result?.toString();
+			if (result) instance.states[state].image_override = (await resizeImage(result)) ?? result;
+		};
+		reader.readAsDataURL(file);
+	}
 
 	let state: number = 0;
 	let bold: boolean;
@@ -60,11 +78,16 @@
 
 <svelte:window
 	on:keydown={(event) => {
-		if (event.key == "Escape") showEditor = false;
+		if (event.key == "Escape" && !panel) showEditor = false;
 	}}
+	on:paste={handlePaste}
 />
 
-<div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-2 text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg z-10">
+<div
+	class={panel
+		? "text-neutral-300 bg-neutral-800/60 border border-neutral-700 rounded-xl p-2"
+		: "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-2 text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg z-10"}
+>
 	<div class="flex flex-row">
 		<div class="select-wrapper m-1 w-full">
 			<select class="w-full bg-neutral-600! border-neutral-500!" bind:value={state} aria-label={$t("instance_editor.state")}>
@@ -73,9 +96,11 @@
 				{/each}
 			</select>
 		</div>
-		<button class="ml-2 mr-1 float-right text-xl text-neutral-300" on:click={() => (showEditor = false)} aria-label={$t("settings.close")}>✕</button>
+		{#if !panel}
+			<button class="ml-2 mr-1 float-right text-xl text-neutral-300" on:click={() => (showEditor = false)} aria-label={$t("settings.close")}>✕</button>
+		{/if}
 	</div>
-	<div class="flex flex-row mx-1">
+	<div class="flex mx-1 {panel ? 'flex-col' : 'flex-row'}">
 		<div class="flex flex-col justify-center items-center mt-2 mb-1">
 			<button
 				on:click={(event) => {
@@ -203,7 +228,7 @@
 			}}
 		/>
 
-		<div class="flex flex-col justify-center pl-4 pr-2 pt-4 pb-2 space-y-2">
+		<div class="flex flex-col justify-center space-y-2 {panel ? 'pt-3 pb-1' : 'pl-4 pr-2 pt-4 pb-2'}">
 			<div class="flex flex-row items-center space-x-2">
 				<label for="editor-text">{$t("instance_editor.text")}</label>
 				<textarea

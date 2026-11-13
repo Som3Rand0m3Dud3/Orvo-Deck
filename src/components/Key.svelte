@@ -6,7 +6,6 @@
 
 	import Clipboard from "phosphor-svelte/lib/Clipboard";
 	import Copy from "phosphor-svelte/lib/Copy";
-	import Pencil from "phosphor-svelte/lib/Pencil";
 	import Trash from "phosphor-svelte/lib/Trash";
 	import InstanceEditor from "./InstanceEditor.svelte";
 
@@ -99,9 +98,23 @@
 	}
 
 	let showEditor = false;
-	function edit() {
-		$openContextMenu = null;
-		showEditor = true;
+
+	// The full editor lives in the right panel while this box is selected.
+	$: inspectedHere = !!slot && active && $inspectedInstance == slot.context;
+	function portal(node: HTMLElement) {
+		let frame = 0;
+		const place = () => {
+			const target = document.getElementById("orvo-instance-editor-slot");
+			if (target) target.appendChild(node);
+			else frame = requestAnimationFrame(place);
+		};
+		place();
+		return {
+			destroy() {
+				cancelAnimationFrame(frame);
+				node.remove();
+			},
+		};
 	}
 
 	function copy() {
@@ -115,6 +128,21 @@
 		$openContextMenu = null;
 		if (!$copiedItem || !context || !handlePaste) return;
 		await handlePaste($copiedItem, context);
+		await tick();
+		$inspectedInstance = `${context.device}.${context.profile}.${context.controller}.${context.position}.0`;
+	}
+
+	// Paste onto a box that already has an action: replace it.
+	async function pasteOver() {
+		$openContextMenu = null;
+		if (!$copiedItem || !context || !handlePaste || !slot) return;
+		const item = $copiedItem;
+		if (item.type == "instance" && item.source.device == context.device && item.source.profile == context.profile && item.source.controller == context.controller && item.source.position == context.position) return;
+		await invoke("remove_instance", { context: slot.context });
+		slot = null;
+		inslot = slot;
+		await tick();
+		await handlePaste(item, context);
 		await tick();
 		$inspectedInstance = `${context.device}.${context.profile}.${context.controller}.${context.position}.0`;
 	}
@@ -216,7 +244,6 @@
 		on:keydown={(e) => {
 			if (!active || !context) return;
 			if (e.key == "Enter") select(e);
-			else if (e.key == "F2") edit();
 			else if ((e.ctrlKey || e.metaKey) && e.key == "c") copy();
 			else if ((e.ctrlKey || e.metaKey) && e.key == "v") paste();
 			else if (e.key == "Delete") clear();
@@ -246,14 +273,16 @@
 				<span class="ml-2">{$t("key.paste")}</span>
 			</button>
 		{:else}
-			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors rounded-t-lg cursor-pointer" on:click|stopPropagation={edit}>
-				<Pencil size="18" class="text-neutral-300" />
-				<span class="ml-2">{$t("key.edit")}</span>
-			</button>
-			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors cursor-pointer" on:click|stopPropagation={copy}>
+			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors rounded-t-lg cursor-pointer" on:click|stopPropagation={copy}>
 				<Copy size="18" class="text-neutral-300" />
 				<span class="ml-2">{$t("key.copy")}</span>
 			</button>
+			{#if $copiedItem}
+				<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors cursor-pointer" on:click|stopPropagation={pasteOver}>
+					<Clipboard size="18" class="text-neutral-300" />
+					<span class="ml-2">{$t("key.paste")}</span>
+				</button>
+			{/if}
 			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors rounded-b-lg cursor-pointer" on:click|stopPropagation={clear}>
 				<Trash size="18" class="text-red-400" />
 				<span class="ml-2">{$t("key.delete")}</span>
@@ -262,6 +291,8 @@
 	</div>
 {/if}
 
-{#if slot && showEditor}
-	<InstanceEditor bind:instance={slot} bind:showEditor />
+{#if slot && inspectedHere}
+	<div use:portal>
+		<InstanceEditor bind:instance={slot} bind:showEditor panel={true} />
+	</div>
 {/if}

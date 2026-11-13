@@ -108,7 +108,7 @@
 		<div class="flex items-center gap-3">
 			<img src={icon} alt="" class="w-10 h-10 rounded-xl bg-neutral-800 border border-neutral-700" />
 			<div class="min-w-0">
-				<p class="font-semibold text-neutral-100 truncate">Key {position + 1} · {actionName}</p>
+				<p class="font-semibold text-neutral-100 truncate">{controller == "Encoder" ? "Slider" : `Key ${position + 1}`} · {actionName}</p>
 				<p class="text-sm text-neutral-400 truncate">{instance.action.plugin}</p>
 			</div>
 		</div>
@@ -230,6 +230,8 @@
 			</div>
 		</div>
 
-		<p class="text-xs text-neutral-400">More options (font, outline, size) are under right-click → Edit on the box.</p>
+		<p class="orvo-label -mb-3">More options</p>
 	</div>
 {/if}
+<!-- the selected box's full editor (font, outline, size, picture zoom…) is placed here -->
+<div id="orvo-instance-editor-slot" class="px-5 pb-5 empty:hidden"></div>

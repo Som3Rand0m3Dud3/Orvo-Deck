@@ -82,3 +82,58 @@ pub fn orvo_take_update_marker() -> bool {
 	let _ = std::fs::remove_file(marker);
 	present
 }
+
+/// Slider lock: copy the slider's action (and its settings) from `profile` to every other page of the
+/// device, so the slider does the same thing on all pages. An empty slider empties it everywhere.
+#[command]
+pub async fn orvo_sync_slider(device: String, profile: String) -> Result<(), Error> {
+	use crate::store::profiles::{acquire_locks_mut, get_slot_mut};
+	let profiles = crate::store::profiles::get_device_profiles(&device)?;
+	let mut locks = acquire_locks_mut().await;
+	let src_ctx = crate::shared::Context { device: device.clone(), profile: profile.clone(), controller: "Encoder".into(), position: 0 };
+	let source = get_slot_mut(&src_ctx, &mut locks).await?.clone();
+	let Some(dev) = crate::shared::DEVICES.get(&device).map(|d| d.clone()) else { return Ok(()) };
+	for other in profiles.into_iter().filter(|p| *p != profile) {
+		let copy = source.clone().map(|mut inst| {
+			inst.context.profile = other.clone();
+			if let Some(children) = &mut inst.children {
+				for c in children.iter_mut() {
+					c.context.profile = other.clone();
+				}
+			}
+			inst
+		});
+		let store = locks.profile_stores.get_profile_store_mut(&dev, &other).await?;
+		if store.value.sliders.is_empty() {
+			continue;
+		}
+		let same = match (&store.value.sliders[0], &copy) {
+			(Some(a), Some(b)) => a.action.uuid == b.action.uuid && a.settings == b.settings,
+			(None, None) => true,
+			_ => false,
+		};
+		if !same {
+			store.value.sliders[0] = copy;
+			store.save()?;
+		}
+	}
+	Ok(())
+}
+
+/// Devices whose slider is locked (same action on every page). Set by the app; locked by default.
+static UNLOCKED_SLIDERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+
+pub fn slider_locked(device: &str) -> bool {
+	device.starts_with("nd-") && !UNLOCKED_SLIDERS.lock().unwrap().contains(device)
+}
+
+#[command]
+pub async fn orvo_slider_lock(device: String, profile: String, locked: bool) -> Result<(), Error> {
+	if locked {
+		UNLOCKED_SLIDERS.lock().unwrap().remove(&device);
+		orvo_sync_slider(device, profile).await
+	} else {
+		UNLOCKED_SLIDERS.lock().unwrap().insert(device);
+		Ok(())
+	}
+}

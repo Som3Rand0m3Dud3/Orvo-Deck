@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.8 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// NineDeck test-jig firmware v0.9 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -20,6 +20,9 @@
 //                   "T 0" / "T 1"         -> slider is linear (B) / audio-taper (A)
 //                   "C"                   -> calibrate the slider at 5 points (bottom, 1/4, middle, 3/4, top; key 1 confirms)
 //                   "R 0" / "R 1"         -> slider direction normal / flipped
+//                   "G <0-1000>" / "G -1" -> show / hide a "move here" mark on the level bar (pickup)
+// Screen: the 3x3 boxes on the left; page keys top right; under the left page key a level bar for
+// the slider (2 boxes tall); the space under the right page key is kept for a second slider.
 //   device -> PC :  "S1 <0-1000>"         -> slider position (only when it moves)
 // Slider: linear pot, ends on 3V3 and GND, wiper on GP26 (ADC0).
 //                   "L<n> <text>"         -> (old) text label, drawn as a picture
@@ -36,7 +39,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.8"
+#define FW_VERSION "0.9"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -86,6 +89,7 @@ float sliderAvg = -1;      // smoothed reading, 0..4095
 int sliderSent = -1;       // last value sent to the PC, 0..1000
 uint32_t sliderMovedAt = 0;
 bool sliderShown = false;
+int pickupMark = -1;       // where to move the slider to take over (0..1000), -1 = none
 char sliderName[24] = "Slider";
 
 // Slider calibration, kept in flash. Without a calibration the pad learns the real ends
@@ -205,54 +209,27 @@ void composePanel() {
     frame.drawRoundRect(x, y, PKW, PKH, RADIUS, p ? C_TEXT : C_EDGE);
     drawArrow(x, y, k == 0, p ? C_BG : C_TEXT);
   }
-  if (sliderShown) {                   // slider feedback instead of the page name
-    int pct = (sliderSent + 5) / 10;
-    frame.setTextColor(C_DIM);
-    frame.setTextSize(1);
-    int16_t x1, y1; uint16_t w, h;
-    frame.getTextBounds(sliderName, 0, 0, &x1, &y1, &w, &h);
-    frame.setCursor(PX + (PW - (int)w) / 2, GY + PKH + 14);
-    frame.print(sliderName);
-    char num[6];
-    snprintf(num, sizeof num, "%d%%", pct);
-    frame.setTextColor(C_TEXT);
-    frame.setTextSize(4);
-    frame.getTextBounds(num, 0, 0, &x1, &y1, &w, &h);
-    frame.setCursor(PX + (PW - (int)w) / 2, GY + PKH + 32);
-    frame.print(num);
-    int bx = PX + 8, bw = PW - 16, by = SH - 26;
-    frame.fillRoundRect(bx, by, bw, 10, 5, C_KEY);
-    frame.fillRoundRect(bx, by, max(10, bw * pct / 100), 10, 5, C_ACCENT);
-    return;
+  // level bar under the left page key
+  int16_t bx = PX, by = GY + PKH + GAP, bw = PKW, bh = SH - by - 2;
+  int pct = sliderSent < 0 ? 0 : (sliderSent + 5) / 10;
+  frame.fillRoundRect(bx, by, bw, bh, RADIUS, C_KEY);
+  frame.drawRoundRect(bx, by, bw, bh, RADIUS, C_EDGE);
+  int fh = (bh - 6) * pct / 100;
+  if (fh > 0) frame.fillRoundRect(bx + 3, by + bh - 3 - fh, bw - 6, fh, RADIUS - 2, C_ACCENT);
+  if (pickupMark >= 0) {                 // pickup: where the slider has to go to take over
+    int my = by + bh - 3 - (bh - 6) * pickupMark / 1000;
+    frame.fillRect(bx + 1, my - 1, bw - 2, 3, C_ORANGE);
   }
-  // page name, wrapped onto up to 3 lines
-  frame.setTextColor(C_TEXT);
+  char num[6];
+  snprintf(num, sizeof num, "%d", pct);
   frame.setTextSize(2);
-  frame.setTextWrap(false);
-  int16_t y = GY + PKH + 18;
-  const char *s = pageName;
-  char line[12];
-  for (int row = 0; row < 3 && *s; row++) {
-    int n = 0;
-    while (s[n] && n < 11) n++;          // 11 characters of size-2 text fit in the panel
-    if (s[n] && n == 11) {               // break at a space if we can
-      int b = n;
-      while (b > 0 && s[b] != ' ') b--;
-      if (b > 0) n = b;
-    }
-    memcpy(line, s, n); line[n] = 0;
-    int16_t x1, y1; uint16_t w, h;
-    frame.getTextBounds(line, 0, 0, &x1, &y1, &w, &h);
-    frame.setCursor(PX + (PW - (int)w) / 2, y);
-    frame.print(line);
-    y += 20;
-    s += n;
-    while (*s == ' ') s++;
-  }
-  frame.setTextSize(1);
-  frame.setTextColor(C_DIM);
-  frame.setCursor(PX + (PW - 6 * 4) / 2, SH - 12);
-  frame.print("ORVO");
+  frame.setTextColor(C_TEXT);
+  int16_t x1, y1; uint16_t w, h;
+  frame.getTextBounds(num, 0, 0, &x1, &y1, &w, &h);
+  frame.setCursor(bx + (bw - (int)w) / 2, by + 8);
+  frame.print(num);
+  // (space under the right page key is kept for a second slider)
+
 }
 
 void snapshotGrid() {
@@ -418,6 +395,11 @@ void handleSerial() {
     } else if (buf[0] == 'T') {
       uint8_t a = atoi(buf + 1) ? 1 : 0;
       if (a != cal.audio) { cal.audio = a; saveCal(); sliderSent = -1; }
+    } else if (buf[0] == 'G') {
+      pickupMark = atoi(buf + 1);
+      if (pickupMark > 1000) pickupMark = 1000;
+      composePanel();
+      push(PX, GY + PKH, SW - PX, SH - (GY + PKH));
     } else if (buf[0] == 'R') {
       uint8_t f = atoi(buf + 1) ? 1 : 0;
       if (f != cal.flip) { cal.flip = f; saveCal(); sliderSent = -1; }
@@ -499,35 +481,37 @@ void drawCalStep() {
   push(PX, 0, SW - PX, SH);
 }
 
-// Reads the slider every 2 ms, smooths it lightly, and reports changes of 0.2 % or more.
+// Reads the slider every 2 ms and smooths it lightly. A new value is only taken when the slider
+// really moved (hysteresis), and the last ~1 % at each end snaps to exactly 0 / 100, so the number
+// never flickers between neighbours. The level bar on the screen is redrawn on every real change.
 void readSlider(uint32_t now) {
   static uint32_t last = 0, drawnAt = 0;
+  static float held = -1;                 // the position currently reported, 0..1000 (float, pre-rounding)
+  static bool dirty = false;
   if (now - last < 2) return;
   last = now;
   int raw = analogRead(PIN_SLIDER);
   sliderAvg = sliderAvg < 0 ? raw : sliderAvg * 0.7f + raw * 0.3f;
-  // small dead zones at both ends so 0 % and 100 % are easy to reach
-  if (calStep >= 0) return;                 // calibrating: don't report
-  int v = sliderValue(sliderAvg);
+  if (calStep >= 0) return;               // calibrating: don't report
+  float v = sliderValue(sliderAvg);
+  if (v <= 10) v = 0;                     // snap the ends
+  if (v >= 990) v = 1000;
   if (calDirty && now - calChangedAt > 3000) saveCal();   // learned ends: save once you stop
-  if (sliderSent < 0 || abs(v - sliderSent) >= 2 || ((v == 0 || v == 1000) && v != sliderSent)) {
-    bool first = sliderSent < 0;
-    sliderSent = v;
-    Serial.print("S1 "); Serial.println(v);
-    if (!first) {
-      sliderMovedAt = now;
-      sliderShown = true;
+  // hysteresis: move only when the new reading is 0.6 % away from the held one (or reaches an end)
+  if (held < 0 || fabsf(v - held) >= 6 || ((v == 0 || v == 1000) && v != held)) {
+    held = v;
+    int out = (int)(v + 0.5f);
+    if (out != sliderSent) {
+      sliderSent = out;
+      Serial.print("S1 "); Serial.println(out);
+      dirty = true;
     }
   }
-  // feedback on the screen while moving (at most every 30 ms), then back to the page name
-  if (sliderShown && now - drawnAt > 20 && drawnAt < sliderMovedAt) {
+  if (dirty && now - drawnAt > 16) {      // redraw the level bar (at most ~60 times a second)
     drawnAt = now;
+    dirty = false;
     composePanel();
-    push(PX, 0, SW - PX, SH);
-  } else if (sliderShown && now - sliderMovedAt > 1200) {
-    sliderShown = false;
-    composePanel();
-    push(PX, 0, SW - PX, SH);
+    push(PX, GY + PKH, SW - PX, SH - (GY + PKH));
   }
 }
 

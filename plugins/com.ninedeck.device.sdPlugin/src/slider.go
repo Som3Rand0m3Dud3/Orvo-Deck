@@ -30,7 +30,52 @@ var (
 	slActions  = map[string]*sliderAction{} // device -> our action on its slider
 	slLast     = map[string]int{}           // device -> last position (0-1000)
 	slNameSent = map[string]string{}
+	slKey      = map[string]string{} // device -> what the slider controlled last ("action|app")
+	slPickup   = map[string]int{}    // device -> level (0-1000) the slider must reach to take over
 )
+
+func targetKey(a *sliderAction) string {
+	app, _ := a.settings["app"].(string)
+	return a.action + "|" + appKey(app)
+}
+
+func levelOf(a *sliderAction) (float32, bool) {
+	switch a.action {
+	case actMaster:
+		return getVolume(volMaster, "")
+	case actMic:
+		return getVolume(volMic, "")
+	case actApp:
+		app, _ := a.settings["app"].(string)
+		return getVolume(volApp, app)
+	}
+	return 0, false
+}
+
+// startPickup: the slider now controls something else (another page, or a new action). Instead of
+// making the level jump to the slider, the slider only takes over once it passes the current level.
+// The pad shows that level as an orange mark on its bar.
+func startPickup(p *pad, a *sliderAction) {
+	lvl, ok := levelOf(a)
+	slMu.Lock()
+	pos, have := slLast[p.id]
+	if !ok || !have {
+		delete(slPickup, p.id)
+		slMu.Unlock()
+		p.write("G-1")
+		return
+	}
+	target := int(lvl*1000 + 0.5)
+	if d := target - pos; d >= -15 && d <= 15 {
+		delete(slPickup, p.id)
+		slMu.Unlock()
+		p.write("G-1")
+		return
+	}
+	slPickup[p.id] = target
+	slMu.Unlock()
+	p.write(fmt.Sprintf("G%d", target))
+}
 
 // Firmware 0.6+ has the slider.
 func sliderCount(p *pad) int {
@@ -109,10 +154,24 @@ func sliderMoved(p *pad, v int) {
 	last, had := slLast[p.id]
 	slLast[p.id] = v
 	a := slActions[p.id]
+	target, picking := slPickup[p.id]
+	if picking && had && ((last-target)*(v-target) <= 0 || abs(v-target) <= 15) {
+		delete(slPickup, p.id) // passed the current level: take over
+		picking = false
+		go p.write("G-1")
+	}
 	slMu.Unlock()
+	if picking {
+		return
+	}
 	if a != nil {
 		applyLevel(a, float32(v)/1000)
 		return
+	}
+	if a == nil {
+		slMu.Lock()
+		delete(slKey, p.id) // moved with nothing on it: the next action picks up again
+		slMu.Unlock()
 	}
 	// someone else's dial action: send the movement as dial turns (1 turn = 1 %)
 	if had {
@@ -152,15 +211,27 @@ func handleActionEvent(msg []byte) {
 	switch ev.Event {
 	case "willAppear", "didReceiveSettings":
 		a := &sliderAction{action: ev.Action, context: ev.Context, settings: ev.Payload.Settings}
+		key := targetKey(a)
 		slMu.Lock()
 		slActions[ev.Device] = a
-		pos, ok := slLast[ev.Device]
+		changed := slKey[ev.Device] != key
+		slKey[ev.Device] = key
 		slMu.Unlock()
 		updateSliderName(ev.Device)
-		if ok {
-			applyLevel(a, float32(pos)/1000) // match the level to where the slider is now
+		if changed && ev.Payload.Controller == "Encoder" {
+			if p := padByID(ev.Device); p != nil && sliderCount(p) > 0 {
+				go startPickup(p, a)
+			}
 		}
 		send(map[string]any{"event": "setTitle", "context": ev.Context, "payload": map[string]any{"title": sliderName(a)}})
+	case "propertyInspectorDidAppear", "sendToPlugin":
+		if ev.Action == actApp {
+			go func() {
+				send(map[string]any{"event": "sendToPropertyInspector", "action": ev.Action, "context": ev.Context,
+					"payload": map[string]any{"apps": listApps()}})
+			}()
+		}
+		return
 	case "willDisappear":
 		slMu.Lock()
 		if cur := slActions[ev.Device]; cur != nil && cur.context == ev.Context {
@@ -170,4 +241,11 @@ func handleActionEvent(msg []byte) {
 		updateSliderName(ev.Device)
 	}
 	_ = fmt.Sprint
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

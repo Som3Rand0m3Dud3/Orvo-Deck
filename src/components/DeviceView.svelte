@@ -81,6 +81,30 @@
 	// Orvo: NineDeck shows its slider as a tall bar beside the keys, moving live with the real one.
 	$: isNineDeck = device.id.startsWith("nd-");
 	let sliderValue: number | null = null;
+
+	// Slider lock: locked (default) = the slider does the same thing on every page.
+	let sliderLocked = true;
+	$: sliderLockKey = `orvo-slider-lock-${device.id}`;
+	$: try {
+		sliderLocked = localStorage.getItem(sliderLockKey) != "0";
+	} catch {
+		sliderLocked = true;
+	}
+	function toggleSliderLock() {
+		sliderLocked = !sliderLocked;
+		try {
+			localStorage.setItem(sliderLockKey, sliderLocked ? "1" : "0");
+		} catch {}
+		invoke("orvo_slider_lock", { device: device.id, profile: profile.id, locked: sliderLocked });
+	}
+	let lastSliderSync = "";
+	$: if (isNineDeck && profile && device.encoders > 0) {
+		const key = `${sliderLocked}|${profile.id}|${profile.sliders[0]?.action?.uuid ?? ""}`;
+		if (key != lastSliderSync) {
+			lastSliderSync = key;
+			invoke("orvo_slider_lock", { device: device.id, profile: profile.id, locked: sliderLocked });
+		}
+	}
 	const unlistenSlider = listen("pad_slider", ({ payload }: { payload: { device: string; value: number } }) => {
 		if (payload.device == device.id) sliderValue = payload.value;
 	});
@@ -243,6 +267,18 @@
 						<div class="absolute left-0 right-0 bottom-0 transition-[height] duration-75" style={`height: ${(sliderValue ?? 0) / 10}%; background: var(--orvo-accent); opacity: 0.28`}></div>
 						<div class="absolute left-1/2 -translate-x-1/2 top-3 bottom-3 w-1.5 rounded-full bg-neutral-600"></div>
 						<span class="absolute top-2 left-0 right-0 text-center text-xs font-semibold text-neutral-200 tabular-nums">{sliderValue != null ? `${Math.round(sliderValue / 10)}%` : "Slider"}</span>
+						<button
+							class="absolute top-1.5 right-1.5 z-10 p-1 rounded-md hover:bg-neutral-700 {sliderLocked ? 'text-neutral-200' : 'text-neutral-500'}"
+							title={sliderLocked ? "Locked: same on every page. Click to set it per page." : "Per page: each page has its own slider action. Click to lock it to all pages."}
+							aria-label={sliderLocked ? "Slider locked to all pages" : "Slider set per page"}
+							aria-pressed={sliderLocked}
+							on:click|stopPropagation={toggleSliderLock}
+						>
+							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+								<rect x="4" y="11" width="16" height="10" rx="2" />
+								{#if sliderLocked}<path d="M8 11V7a4 4 0 0 1 8 0v4" />{:else}<path d="M8 11V7a4 4 0 0 1 7.5-2" />{/if}
+							</svg>
+						</button>
 						<Key
 							context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
 							bind:inslot={profile.sliders[i]}

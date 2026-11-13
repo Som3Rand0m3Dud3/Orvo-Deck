@@ -113,6 +113,8 @@ async fn main() {
 			frontend::pad::orvo_get_profile,
 			frontend::pad::orvo_page_images,
 			frontend::pad::orvo_pad_settings,
+			frontend::pad::orvo_sync_slider,
+			frontend::pad::orvo_slider_lock,
 			frontend::pad::orvo_take_update_marker,
 		])
 		.setup(|app| {

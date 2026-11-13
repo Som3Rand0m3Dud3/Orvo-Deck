@@ -54,11 +54,18 @@
 			const effectiveRows = Math.min(devices[value].rows + Math.min(devices[value].encoders, 1) + Math.min(devices[value].touchpoints, 1), 4);
 			const idealWidth = effectiveCols * 132 + 1040;
 			const idealHeight = Math.max(effectiveRows * 132 + 384, 820) + (buildInfo?.split("</summary>")[0]?.includes("darwin") ? 28 : 0);
+			// Only ever make the window bigger when it is too small; never shrink it or touch a
+			// maximised window (the pad reconnecting used to reset the window size).
 			(async () => {
 				const width = Math.min(idealWidth, screen.availWidth);
 				const height = Math.min(idealHeight, screen.availHeight);
 				await window.setMinSize(new LogicalSize(width, height));
-				await window.setSize(new LogicalSize(width, height));
+				if (await window.isMaximized()) return;
+				const scale = await window.scaleFactor();
+				const size = (await window.innerSize()).toLogical(scale);
+				if (size.width < width - 1 || size.height < height - 1) {
+					await window.setSize(new LogicalSize(Math.max(size.width, width), Math.max(size.height, height)));
+				}
 			})();
 		}
 	}

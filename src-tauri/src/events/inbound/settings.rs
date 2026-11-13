@@ -13,6 +13,10 @@ pub async fn set_settings(event: super::ContextAndPayloadEvent<serde_json::Value
 		outbound::did_receive_settings(instance, !from_property_inspector).await?;
 		mark_profile_stale(&event.context.device, &mut locks).await?;
 	}
+	drop(locks);
+	if event.context.controller == "Encoder" && crate::events::frontend::pad::slider_locked(&event.context.device) {
+		let _ = crate::events::frontend::pad::orvo_sync_slider(event.context.device.clone(), event.context.profile.clone()).await;
+	}
 
 	Ok(())
 }

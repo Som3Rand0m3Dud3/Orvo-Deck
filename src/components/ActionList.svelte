@@ -74,6 +74,20 @@
 			(items[i] as HTMLElement).tabIndex = i == index ? 0 : -1;
 		}
 	}
+
+	// Remember which categories are folded shut.
+	let closedCategories: string[] = [];
+	try {
+		closedCategories = JSON.parse(localStorage.getItem("orvo-closed-categories") ?? "[]");
+	} catch {}
+	function rememberCategory(name: string, open: boolean) {
+		const has = closedCategories.includes(name);
+		if (open == !has) return;
+		closedCategories = open ? closedCategories.filter((c) => c != name) : [...closedCategories, name];
+		try {
+			localStorage.setItem("orvo-closed-categories", JSON.stringify(closedCategories));
+		} catch {}
+	}
 </script>
 
 <div class="flex flex-col grow min-h-0">
@@ -85,7 +99,7 @@
 	<span id="action-list-hint" class="sr-only">{$t("action_list.hint")}</span>
 	<div class="grow overflow-auto select-none px-2 pb-3">
 		{#each filteredCategories as [name, { icon, actions }]}
-			<details open>
+			<details open={!closedCategories.includes(name)} on:toggle={(e) => rememberCategory(name, e.currentTarget.open)}>
 				<summary class="px-2 py-2.5 text-sm font-semibold text-neutral-200 hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer">
 					{#if icon || (actions[0] && plugins.find((x) => x.id == actions[0].plugin) && categories[name].actions.every((x) => x.plugin == actions[0].plugin))}
 						<img
