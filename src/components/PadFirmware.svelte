@@ -24,7 +24,8 @@
 		// Tell the pad plugin the chosen slide speed.
 		try {
 			const saved = localStorage.getItem("orvo-slide-ms");
-			invoke("orvo_pad_settings", { slideMs: saved != null ? parseInt(saved) || 0 : 180 }).catch(() => {});
+			const taper = localStorage.getItem("orvo-slider-taper");
+			invoke("orvo_pad_settings", { slideMs: saved != null ? parseInt(saved) || 0 : 180, taper: taper == "1" ? 1 : 0 }).catch(() => {});
 		} catch {}
 		const unlisten = listen("pad_status", ({ payload }: { payload: PadStatus }) => {
 			store.update((s) => ({ ...s, [payload.device]: payload }));

@@ -138,6 +138,8 @@ func main() {
 			Profile    string  `json:"profile"`
 			Images     []*string `json:"images"`
 			SlideMs    *int      `json:"slideMs"`
+			Taper      *int      `json:"taper"`
+			Recal      bool      `json:"recalibrate"`
 		}
 		json.Unmarshal(msg, &ev)
 		switch ev.Event {
@@ -150,8 +152,22 @@ func main() {
 				queuePicture(ev.Device, ev.Profile, *ev.Position, img)
 			}
 		case "orvoPadSettings":
-			if ev.SlideMs != nil {
-				slideMs.Store(int32(*ev.SlideMs))
+			if ev.Taper != nil {
+				sliderTaper.Store(int32(*ev.Taper))
+			}
+			if ev.Recal {
+				padsMu.Lock()
+				for _, p := range pads {
+					if !newer("0.7", p.fw) {
+						p.write("C")
+					}
+				}
+				padsMu.Unlock()
+			}
+			if ev.SlideMs != nil || ev.Taper != nil {
+				if ev.SlideMs != nil {
+					slideMs.Store(int32(*ev.SlideMs))
+				}
 				padsMu.Lock()
 				for _, p := range pads {
 					applySettings(p)
@@ -569,11 +585,20 @@ func flipPage(p *pad, step int) {
 // slide speed chosen in Orvo Studio (ms, 0 = no slide)
 var slideMs atomic.Int32
 
-func init() { slideMs.Store(180) }
+// slider curve chosen in Orvo Studio (0 = linear B pot, 1 = audio A pot, -1 = not set)
+var sliderTaper atomic.Int32
+
+func init() {
+	slideMs.Store(180)
+	sliderTaper.Store(-1)
+}
 
 func applySettings(p *pad) {
 	if p.box > 0 && !newer("0.5", p.fw) {
 		p.write(fmt.Sprintf("V %d", slideMs.Load()))
+	}
+	if t := sliderTaper.Load(); t >= 0 && !newer("0.7", p.fw) {
+		p.write(fmt.Sprintf("T %d", t))
 	}
 }
 
@@ -802,7 +827,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.6"
+const latestFirmware = "0.7"
 
 var (
 	updMu    sync.Mutex

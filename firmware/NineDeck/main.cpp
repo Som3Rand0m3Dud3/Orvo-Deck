@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.6 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// NineDeck test-jig firmware v0.7 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -17,6 +17,8 @@
 //                   "A <dir>"             -> the next "F" slides the 3x3 in (1 = from the right, -1 = from the left)
 //                   "V <ms>"              -> slide duration (0 = no slide)
 //                   "N1 <text>"           -> name of what the slider controls (shown while moving it)
+//                   "T 0" / "T 1"         -> slider is linear (B) / audio-taper (A)
+//                   "C"                   -> calibrate the slider (bottom, middle, top; confirm each with key 1)
 //   device -> PC :  "S1 <0-1000>"         -> slider position (only when it moves)
 // Slider: linear pot, ends on 3V3 and GND, wiper on GP26 (ADC0).
 //                   "L<n> <text>"         -> (old) text label, drawn as a picture
@@ -31,8 +33,9 @@
 #include <Adafruit_ST7789.h>
 #include <Keyboard.h>
 #include <tusb.h>
+#include <EEPROM.h>
 
-#define FW_VERSION "0.6"
+#define FW_VERSION "0.7"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -83,6 +86,55 @@ int sliderSent = -1;       // last value sent to the PC, 0..1000
 uint32_t sliderMovedAt = 0;
 bool sliderShown = false;
 char sliderName[24] = "Slider";
+
+// Slider calibration, kept in flash. Without a calibration the pad learns the real ends
+// as you slide; "audio" undoes the log curve of A-type pots.
+struct SliderCal { uint32_t magic; float lo, mid, hi; uint8_t audio, hasMid; };
+const uint32_t CAL_MAGIC = 0x4F52564F;      // "ORVO"
+SliderCal cal = {CAL_MAGIC, 4095, -1, 0, 0, 0};
+bool calDirty = false;
+uint32_t calChangedAt = 0;
+int calStep = -1;                            // -1 = not calibrating, 0 bottom, 1 middle, 2 top
+void drawCalStep();
+
+void loadCal() {
+  EEPROM.begin(256);
+  SliderCal c;
+  EEPROM.get(0, c);
+  if (c.magic == CAL_MAGIC && c.hi > c.lo) cal = c;
+}
+void saveCal() {
+  EEPROM.put(0, cal);
+  EEPROM.commit();
+  calDirty = false;
+}
+
+// raw ADC (0..4095, smoothed) -> 0..1000
+int sliderValue(float raw) {
+  if (calStep < 0 && !cal.hasMid) {           // learn the real ends
+    if (raw < cal.lo - 8 || raw > cal.hi + 8) {
+      cal.lo = min(cal.lo, raw);
+      cal.hi = max(cal.hi, raw);
+      calDirty = true;
+      calChangedAt = millis();
+    }
+  }
+  float lo = cal.lo, hi = cal.hi;
+  if (hi - lo < 600) { lo = 40; hi = 4055; }  // not learned yet
+  float x;
+  if (cal.hasMid && cal.mid > lo && cal.mid < hi) {          // 3-point calibration
+    x = raw <= cal.mid ? 0.5f * (raw - lo) / (cal.mid - lo) : 0.5f + 0.5f * (raw - cal.mid) / (hi - cal.mid);
+  } else {
+    float r = (raw - lo) / (hi - lo);
+    if (r < 0) r = 0;
+    if (r > 1) r = 1;
+    // A-type pots: about 10 % of the signal at half travel; undo that curve
+    x = cal.audio ? logf(1 + r * 80.0f) / logf(81.0f) : r;
+  }
+  return constrain((int)(x * 1000 + 0.5f), 0, 1000);
+}
+
+
 uint16_t colBuf[SH];       // one screen column on its way to the display
 
 bool state[11];
@@ -290,6 +342,7 @@ void setup() {
   tft.sendCommand(0xC6, &rate, 1);
 
   analogReadResolution(12);
+  loadCal();
   Serial.begin(115200);
   Serial.setTimeout(500);
   Keyboard.begin();
@@ -352,6 +405,12 @@ void handleSerial() {
     } else if (buf[0] == 'A') {                       // next page change slides in
       slideDir = atoi(buf + 1) < 0 ? -1 : 1;
       snapshotGrid();
+    } else if (buf[0] == 'T') {
+      uint8_t a = atoi(buf + 1) ? 1 : 0;
+      if (a != cal.audio) { cal.audio = a; saveCal(); sliderSent = -1; }
+    } else if (buf[0] == 'C') {
+      calStep = 0;
+      drawCalStep();
     } else if (buf[0] == 'N' && buf[1] == '1') {
       strncpy(sliderName, buf[2] == ' ' ? buf + 3 : buf + 2, sizeof sliderName - 1);
       sliderName[sizeof sliderName - 1] = 0;
@@ -406,6 +465,27 @@ void watchHost(uint32_t now) {
   }
 }
 
+// on-screen calibration steps
+void drawCalStep() {
+  static const char *steps[] = {"Slide to the BOTTOM", "Slide to the MIDDLE", "Slide to the TOP"};
+  frame.fillRect(PX, GY + PKH + 4, SW - PX, SH - (GY + PKH + 4), C_BG);
+  frame.setTextColor(C_ORANGE);
+  frame.setTextSize(1);
+  frame.setCursor(PX + 6, GY + PKH + 16);
+  frame.print("SLIDER CALIBRATION");
+  frame.setTextColor(C_TEXT);
+  frame.setCursor(PX + 6, GY + PKH + 36);
+  frame.print(steps[calStep]);
+  frame.setTextColor(C_DIM);
+  frame.setCursor(PX + 6, GY + PKH + 56);
+  frame.print("then press key 1");
+  char st[8];
+  snprintf(st, sizeof st, "%d / 3", calStep + 1);
+  frame.setCursor(PX + 6, SH - 16);
+  frame.print(st);
+  push(PX, 0, SW - PX, SH);
+}
+
 // Reads the slider every 4 ms, smooths it, and reports changes of more than ~0.4 %.
 void readSlider(uint32_t now) {
   static uint32_t last = 0, drawnAt = 0;
@@ -414,7 +494,9 @@ void readSlider(uint32_t now) {
   int raw = analogRead(PIN_SLIDER);
   sliderAvg = sliderAvg < 0 ? raw : sliderAvg * 0.85f + raw * 0.15f;
   // small dead zones at both ends so 0 % and 100 % are easy to reach
-  int v = constrain((int)((sliderAvg - 40) * 1000.0f / (4095 - 80) + 0.5f), 0, 1000);
+  if (calStep >= 0) return;                 // calibrating: don't report
+  int v = sliderValue(sliderAvg);
+  if (calDirty && now - calChangedAt > 3000) saveCal();   // learned ends: save once you stop
   if (sliderSent < 0 || abs(v - sliderSent) >= 4 || ((v == 0 || v == 1000) && v != sliderSent)) {
     bool first = sliderSent < 0;
     sliderSent = v;
@@ -445,6 +527,26 @@ void loop() {
     if (p != state[i] && now - changedAt[i] > 8) {     // 8 ms debounce
       state[i] = p;
       changedAt[i] = now;
+      if (calStep >= 0) {                     // calibrating: key 1 confirms the step
+        if (i == 0 && p) {
+          float raw = sliderAvg;
+          if (calStep == 0) cal.lo = raw;
+          else if (calStep == 1) cal.mid = raw;
+          else cal.hi = raw;
+          if (++calStep > 2) {
+            calStep = -1;
+            if (cal.hi < cal.lo) { float t = cal.hi; cal.hi = cal.lo; cal.lo = t; }
+            cal.hasMid = cal.mid > cal.lo && cal.mid < cal.hi;
+            saveCal();
+            sliderSent = -1;
+            composePanel();
+            push(PX, 0, SW - PX, SH);
+          } else {
+            drawCalStep();
+          }
+        }
+        continue;
+      }
       Serial.print('K'); Serial.print(i + 1); Serial.println(p ? " 1" : " 0");
       if (hidOn) { if (p) Keyboard.press(KEY_CODES[i]); else Keyboard.release(KEY_CODES[i]); }
       // instant press feedback, drawn on the pad itself

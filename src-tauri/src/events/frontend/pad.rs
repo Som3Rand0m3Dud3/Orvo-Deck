@@ -50,8 +50,18 @@ pub async fn orvo_page_images(device: String, profile: String, images: Vec<Optio
 
 /// Slide speed for page changes on the pad (ms, 0 = off), chosen in Settings.
 #[command]
-pub async fn orvo_pad_settings(slide_ms: u32) -> Result<(), Error> {
-	crate::events::outbound::orvo_send_to_plugin(NINEDECK_PLUGIN, &serde_json::json!({ "event": "orvoPadSettings", "slideMs": slide_ms.min(1000) })).await?;
+pub async fn orvo_pad_settings(slide_ms: Option<u32>, taper: Option<u8>, recalibrate: Option<bool>) -> Result<(), Error> {
+	let mut msg = serde_json::json!({ "event": "orvoPadSettings" });
+	if let Some(ms) = slide_ms {
+		msg["slideMs"] = ms.min(1000).into();
+	}
+	if let Some(t) = taper {
+		msg["taper"] = (t.min(1) as u32).into();
+	}
+	if recalibrate.unwrap_or(false) {
+		msg["recalibrate"] = true.into();
+	}
+	crate::events::outbound::orvo_send_to_plugin(NINEDECK_PLUGIN, &msg).await?;
 	Ok(())
 }
 

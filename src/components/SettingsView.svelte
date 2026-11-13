@@ -36,6 +36,23 @@
 		invoke("orvo_pad_settings", { slideMs: value }).catch(() => {});
 	}
 
+	// Slider: linear (B) or audio-taper (A) pot, and calibration
+	let taper = 0;
+	try {
+		taper = localStorage.getItem("orvo-slider-taper") == "1" ? 1 : 0;
+	} catch {}
+	function setTaper(value: number) {
+		taper = value;
+		try {
+			localStorage.setItem("orvo-slider-taper", String(value));
+		} catch {}
+		invoke("orvo_pad_settings", { taper: value }).catch(() => {});
+	}
+	function recalibrate() {
+		invoke("orvo_pad_settings", { recalibrate: true }).catch(() => {});
+		message("Look at the pad's screen: slide to the bottom, the middle and the top, pressing key 1 at each step.", { title: "Slider calibration", kind: "info" });
+	}
+
 	let testVersions = true;
 	try {
 		const saved = localStorage.getItem("orvo-test-versions");
@@ -161,6 +178,12 @@
 		<div class="flex flex-row items-center gap-3 mt-2">
 			<input type="range" min="0" max="500" step="10" value={slideMs} on:change={(e) => setSlide(parseInt(e.currentTarget.value))} aria-label="Page slide speed in milliseconds" />
 			<span class="text-sm text-neutral-400 tabular-nums">{slideMs == 0 ? "no slide" : `${slideMs} ms`}</span>
+		</div>
+		<div class="flex flex-row flex-wrap items-center gap-2 mt-3">
+			<span class="text-neutral-400">Slider type:</span>
+			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" class:bg-neutral-900={taper == 0} class:text-neutral-100={taper == 0} on:click={() => setTaper(0)}>Linear (B)</button>
+			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" class:bg-neutral-900={taper == 1} class:text-neutral-100={taper == 1} on:click={() => setTaper(1)}>Audio (A)</button>
+			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" on:click={recalibrate}>Recalibrate…</button>
 		</div>
 	</div>
 
