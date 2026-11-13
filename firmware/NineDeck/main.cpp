@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.3 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// NineDeck test-jig firmware v0.4 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -9,6 +9,8 @@
 //   device -> PC :  "K<n> 1" / "K<n> 0"   key n (1..11) pressed / released
 //   PC -> device :  "?"                   -> "NINEDECK 0.3 KEYS 11 BOX <size>"
 //                   "I<n> <w> <h>" + w*h*2 bytes (RGB565, little endian) -> picture for box n (1..9)
+//                   "Z<n> <w> <h> <len>" + len bytes -> same picture, packed as runs of
+//                                            [count][low][high] (much smaller for icons)
 //                   "E<n>"                -> box n is empty
 //                   "P <text>"            -> page name shown next to the page keys
 //                   "F"                   -> show everything sent so far, all at once
@@ -24,7 +26,7 @@
 #include <Adafruit_ST7789.h>
 #include <Keyboard.h>
 
-#define FW_VERSION "0.3"
+#define FW_VERSION "0.4"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -244,6 +246,21 @@ void handleSerial() {
         hasPicture[k - 1] = got == len;
       } else {                                        // wrong size: read and drop it
         for (size_t i = 0; i < len; i++) { uint32_t t0 = millis(); while (!Serial.available() && millis() - t0 < 500) {} if (Serial.available()) Serial.read(); }
+      }
+    } else if (buf[0] == 'Z') {                       // Z<n> <w> <h> <len> + packed pixels
+      static uint8_t packed[BOX * BOX * 3];
+      int k = 0, w = 0, h = 0, len = 0;
+      sscanf(buf + 1, "%d %d %d %d", &k, &w, &h, &len);
+      if (len < 0 || len > (int)sizeof packed) len = 0;
+      size_t got = Serial.readBytes((char *)packed, len);
+      if (k >= 1 && k <= 9 && w == BOX && h == BOX && got == (size_t)len) {
+        uint16_t *dst = boxes[k - 1];
+        int out = 0;
+        for (int i = 0; i + 2 < len && out < BOX * BOX; i += 3) {
+          uint16_t c = packed[i + 1] | (packed[i + 2] << 8);
+          for (int r = 0; r < packed[i] && out < BOX * BOX; r++) dst[out++] = c;
+        }
+        hasPicture[k - 1] = out == BOX * BOX;
       }
     } else if (buf[0] == 'E') {
       int k = atoi(buf + 1);

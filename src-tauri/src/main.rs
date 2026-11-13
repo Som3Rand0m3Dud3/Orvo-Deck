@@ -110,6 +110,8 @@ async fn main() {
 			frontend::updates::install_release,
 			frontend::pad::request_pad_status,
 			frontend::pad::update_pad_firmware,
+			frontend::pad::orvo_get_profile,
+			frontend::pad::orvo_page_images,
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();

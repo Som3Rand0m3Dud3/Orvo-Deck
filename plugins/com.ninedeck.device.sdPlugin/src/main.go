@@ -56,6 +56,10 @@ type pad struct {
 	pending map[int][]byte // box index -> RGB565 picture (nil = empty), waiting to be sent
 	pageSet string
 	timer   *time.Timer
+	page    string    // page (profile id) the pad shows now
+	flipped time.Time // when the pad's own page keys last changed page
+	shown   [9][]byte // what each box shows now (to skip resending the same picture)
+	smu     sync.Mutex // one sender at a time (pad keys and app updates)
 	labels  [numKeys]string
 	sent    [numKeys]bool
 	closed  bool
@@ -129,6 +133,8 @@ func main() {
 			Controller *string `json:"controller"`
 			Position   *int    `json:"position"`
 			Image      *string `json:"image"`
+			Profile    string  `json:"profile"`
+			Images     []*string `json:"images"`
 		}
 		json.Unmarshal(msg, &ev)
 		switch ev.Event {
@@ -138,8 +144,10 @@ func main() {
 				if ev.Image != nil {
 					img = *ev.Image
 				}
-				queuePicture(ev.Device, *ev.Position, img)
+				queuePicture(ev.Device, ev.Profile, *ev.Position, img)
 			}
+		case "orvoPageImages":
+			go storePage(ev.Device, ev.Profile, ev.Images)
 		case "orvoPadStatusRequest":
 			padsMu.Lock()
 			for _, p := range pads {
@@ -259,6 +267,7 @@ func tryOpen(portName, serialNo string) {
 	migrateLayout(p.id)
 	p.write("H 0")
 	if p.box > 0 {
+		p.page = selectedProfile(p.id)
 		p.pageSet = pageLabel(p.id)
 		p.write("P " + p.pageSet)
 		p.write("F")
@@ -302,7 +311,7 @@ func reader(p *pad, rd *bufio.Reader) {
 			}
 			k, _ := strconv.Atoi(parts[0])
 			if (k == 10 || k == 11) && parts[1] == "1" {
-				flipPage(p.id, map[int]int{10: -1, 11: 1}[k])
+				flipPage(p, map[int]int{10: -1, 11: 1}[k])
 				continue
 			}
 			pos := keyToPos(k)
@@ -488,27 +497,147 @@ func listPages(device string) []string {
 	return out
 }
 
-func flipPage(device string, step int) {
+func flipPage(p *pad, step int) {
+	device := p.id
 	pages := listPages(device)
 	if len(pages) < 2 {
 		return
 	}
-	cur := selectedProfile(device)
+	p.pmu.Lock()
+	cur := p.page
+	p.pmu.Unlock()
+	if cur == "" {
+		cur = selectedProfile(device)
+	}
 	i := 0
-	for n, p := range pages {
-		if p == cur {
+	for n, x := range pages {
+		if x == cur {
 			i = n
 		}
 	}
 	next := pages[(i+step+len(pages))%len(pages)]
-	send(map[string]any{"event": "switchProfile", "device": device, "profile": next})
-	go func() {
-		time.Sleep(400 * time.Millisecond)
-		select {
-		case kick <- struct{}{}:
-		default:
+
+	if p.box > 0 {
+		// Show the page right away from the pictures Orvo Studio prepared, then tell the app.
+		p.pmu.Lock()
+		p.page = next
+		p.flipped = time.Now()
+		p.pending = map[int][]byte{}
+		cached, ok := pageCache(device, next)
+		p.pmu.Unlock()
+		if ok {
+			for pos := 0; pos < 9; pos++ {
+				sendBox(p, pos, cached[pos])
+			}
 		}
-	}()
+		p.pageSet = pageName(next)
+		p.write("P " + p.pageSet)
+		p.write("F")
+	}
+	send(map[string]any{"event": "switchProfile", "device": device, "profile": next})
+	if p.box == 0 {
+		go func() {
+			time.Sleep(400 * time.Millisecond)
+			kickLabels()
+		}()
+	}
+}
+
+// ---------- page pictures kept on the PC (as many pages as you like) ----------
+
+var (
+	cacheMu sync.Mutex
+	cache   = map[string]map[string][9][]byte{} // device -> page -> box pictures (pad format)
+)
+
+func pageCache(device, page string) ([9][]byte, bool) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	c, ok := cache[device][page]
+	return c, ok
+}
+
+func setCacheBox(device, page string, pos int, pix []byte) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	if cache[device] == nil {
+		cache[device] = map[string][9][]byte{}
+	}
+	c := cache[device][page]
+	c[pos] = pix
+	cache[device][page] = c
+}
+
+func storePage(device, page string, images []*string) {
+	p := padByID(device)
+	if p == nil || p.box == 0 {
+		return
+	}
+	var c [9][]byte
+	for i := 0; i < 9 && i < len(images); i++ {
+		if images[i] != nil && *images[i] != "" {
+			c[i] = toRGB565(*images[i], p.box)
+		}
+	}
+	cacheMu.Lock()
+	if cache[device] == nil {
+		cache[device] = map[string][9][]byte{}
+	}
+	cache[device][page] = c
+	cacheMu.Unlock()
+}
+
+func pageName(id string) string {
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	return cleanLabel(id)
+}
+
+// sendBox sends one box unless the pad already shows exactly that picture.
+func sendBox(p *pad, pos int, pix []byte) bool {
+	p.smu.Lock()
+	defer p.smu.Unlock()
+	if p.shown[pos] != nil && pix != nil && bytes.Equal(p.shown[pos], pix) {
+		return false
+	}
+	if p.shown[pos] == nil && pix == nil && p.sent[pos] {
+		return false
+	}
+	p.shown[pos] = pix
+	p.sent[pos] = true
+	if pix == nil {
+		p.write(fmt.Sprintf("E%d", pos+1))
+		return true
+	}
+	var b bytes.Buffer
+	if !newer("0.4", p.fw) {
+		if z := rle(pix); len(z) < len(pix) {
+			fmt.Fprintf(&b, "Z%d %d %d %d\n", pos+1, p.box, p.box, len(z))
+			b.Write(z)
+			p.writeRaw(b.Bytes())
+			return true
+		}
+	}
+	fmt.Fprintf(&b, "I%d %d %d\n", pos+1, p.box, p.box)
+	b.Write(pix)
+	p.writeRaw(b.Bytes())
+	return true
+}
+
+// rle packs RGB565 pixels as runs: [count 1-255][low byte][high byte].
+func rle(pix []byte) []byte {
+	out := make([]byte, 0, len(pix)/2)
+	for i := 0; i < len(pix); {
+		lo, hi := pix[i], pix[i+1]
+		n := 1
+		for i+2*n+1 < len(pix) && n < 255 && pix[i+2*n] == lo && pix[i+2*n+1] == hi {
+			n++
+		}
+		out = append(out, byte(n), lo, hi)
+		i += 2 * n
+	}
+	return out
 }
 
 // migrateLayout moves profiles saved with the old 3x4 layout (page keys in a 4th column)
@@ -639,7 +768,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.3"
+const latestFirmware = "0.4"
 
 var (
 	updMu    sync.Mutex
@@ -783,7 +912,7 @@ func padByID(device string) *pad {
 
 // queuePicture converts the app's rendered box (a data URL) for the pad and sends it a moment
 // later together with any other boxes that change at the same time, so a page change shows at once.
-func queuePicture(device string, pos int, dataURL string) {
+func queuePicture(device, profile string, pos int, dataURL string) {
 	p := padByID(device)
 	if p == nil || p.box == 0 || pos < 0 || pos > 8 {
 		if p != nil && p.box == 0 {
@@ -796,11 +925,20 @@ func queuePicture(device string, pos int, dataURL string) {
 		pix = toRGB565(dataURL, p.box)
 	}
 	p.pmu.Lock()
+	defer p.pmu.Unlock()
+	if profile != "" {
+		setCacheBox(device, profile, pos, pix)
+		if profile != p.page {
+			if time.Since(p.flipped) < 1500*time.Millisecond {
+				return // a late picture from the page we just left: the pad already moved on
+			}
+			p.page = profile // the page was changed in the app
+		}
+	}
 	p.pending[pos] = pix
 	if p.timer == nil {
-		p.timer = time.AfterFunc(25*time.Millisecond, func() { flushPictures(p) })
+		p.timer = time.AfterFunc(12*time.Millisecond, func() { flushPictures(p) })
 	}
-	p.pmu.Unlock()
 }
 
 func flushPictures(p *pad) {
@@ -810,25 +948,30 @@ func flushPictures(p *pad) {
 	p.timer = nil
 	p.pmu.Unlock()
 
-	for pos := 0; pos < 9; pos++ {
-		pix, ok := pending[pos]
-		if !ok {
-			continue
-		}
-		if pix == nil {
-			p.write(fmt.Sprintf("E%d", pos+1))
-			continue
-		}
-		var b bytes.Buffer
-		fmt.Fprintf(&b, "I%d %d %d\n", pos+1, p.box, p.box)
-		b.Write(pix)
-		p.writeRaw(b.Bytes())
+	if len(pending) == 0 {
+		return
 	}
-	if name := pageLabel(p.id); name != p.pageSet {
+	changed := false
+	for pos := 0; pos < 9; pos++ {
+		if pix, ok := pending[pos]; ok && sendBox(p, pos, pix) {
+			changed = true
+		}
+	}
+	p.pmu.Lock()
+	page := p.page
+	p.pmu.Unlock()
+	name := pageName(page)
+	if page == "" {
+		name = pageLabel(p.id)
+	}
+	if name != p.pageSet {
+		changed = true
 		p.pageSet = name
 		p.write("P " + name)
 	}
-	p.write("F")
+	if changed {
+		p.write("F")
+	}
 }
 
 // pageLabel is the page's name for the pad's side panel, e.g. "Streaming".

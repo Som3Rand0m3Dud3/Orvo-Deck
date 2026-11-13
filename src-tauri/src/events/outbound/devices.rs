@@ -46,6 +46,8 @@ struct SetImageEvent {
 	controller: Option<String>,
 	position: Option<u8>,
 	image: Option<String>,
+	/// Orvo: which page the picture belongs to (other plugins ignore this).
+	profile: Option<String>,
 }
 
 pub async fn update_image(context: crate::shared::Context, image: Option<String>) -> Result<(), anyhow::Error> {
@@ -63,6 +65,7 @@ pub async fn update_image(context: crate::shared::Context, image: Option<String>
 				controller: Some(context.controller),
 				position: Some(context.position),
 				image,
+				profile: Some(context.profile),
 			},
 		)
 		.await?;
@@ -96,6 +99,7 @@ pub async fn clear_screen(device: String) -> Result<(), anyhow::Error> {
 				controller: None,
 				position: None,
 				image: None,
+				profile: None,
 			},
 		)
 		.await?;

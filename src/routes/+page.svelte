@@ -12,6 +12,7 @@
 	import DeviceView from "../components/DeviceView.svelte";
 	import NoDevicesDetected from "../components/NoDevicesDetected.svelte";
 	import PadFirmware from "../components/PadFirmware.svelte";
+	import PadPreloader from "../components/PadPreloader.svelte";
 	import PagesNav from "../components/PagesNav.svelte";
 	import ParentActionView from "../components/ParentActionView.svelte";
 	import PluginManager from "../components/PluginManager.svelte";
@@ -73,6 +74,9 @@
 			<p class="orvo-label px-5 pt-2 pb-2 border-t border-neutral-700">Actions</p>
 			<ActionList bind:this={$actionList} />
 			{#if lastDevice}<PadFirmware device={lastDevice} />{/if}
+			{#each Object.keys(devices) as id (id)}
+				<PadPreloader device={id} profile={selectedProfiles[id]} />
+			{/each}
 		</aside>
 
 		<main class="relative flex flex-col grow min-w-0">
