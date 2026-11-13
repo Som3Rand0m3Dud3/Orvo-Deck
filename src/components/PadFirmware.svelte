@@ -17,15 +17,36 @@
 	type PadStatus = { device: string; name: string; firmware: string; latest: string; updateAvailable: boolean; state: "ready" | "updating" | "done" | "error"; message: string };
 	$: statuses = $store as { [device: string]: PadStatus };
 
+	let autoUpdate = false;
 	onMount(() => {
+		// After Orvo Studio updated itself, update the pad straight away too (one click overall).
+		invoke<boolean>("orvo_take_update_marker").then((v) => (autoUpdate = v)).catch(() => {});
+		// Tell the pad plugin the chosen slide speed.
+		try {
+			const saved = localStorage.getItem("orvo-slide-ms");
+			invoke("orvo_pad_settings", { slideMs: saved != null ? parseInt(saved) || 0 : 180 }).catch(() => {});
+		} catch {}
 		const unlisten = listen("pad_status", ({ payload }: { payload: PadStatus }) => {
 			store.update((s) => ({ ...s, [payload.device]: payload }));
+			if (autoUpdate && payload.updateAvailable && payload.state == "ready") {
+				autoUpdate = false;
+				startUpdate(payload);
+			}
 		});
 		invoke("request_pad_status").catch(() => {});
 		return () => unlisten.then((f) => f());
 	});
 
 	$: status = statuses[device];
+
+	async function startUpdate(target: PadStatus) {
+		store.update((s) => ({ ...s, [target.device]: { ...target, state: "updating", message: "Updating the pad to match the new version…" } }));
+		try {
+			await invoke("update_pad_firmware", { device: target.device });
+		} catch (error) {
+			store.update((s) => ({ ...s, [target.device]: { ...target, state: "error", message: String(error) } }));
+		}
+	}
 
 	async function update() {
 		if (!status) return;

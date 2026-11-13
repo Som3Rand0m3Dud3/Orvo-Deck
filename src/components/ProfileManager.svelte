@@ -152,6 +152,9 @@
 	}
 
 	let showPopup: boolean = false;
+	export function reload() {
+		getProfiles(device);
+	}
 	export function openManager() {
 		showPopup = true;
 	}

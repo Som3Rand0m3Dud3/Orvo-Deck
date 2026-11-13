@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.4 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// NineDeck test-jig firmware v0.5 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -14,6 +14,8 @@
 //                   "E<n>"                -> box n is empty
 //                   "P <text>"            -> page name shown next to the page keys
 //                   "F"                   -> show everything sent so far, all at once
+//                   "A <dir>"             -> the next "F" slides the 3x3 in (1 = from the right, -1 = from the left)
+//                   "V <ms>"              -> slide duration (0 = no slide)
 //                   "L<n> <text>"         -> (old) text label, drawn as a picture
 //                   "B"                   -> restart into the USB update drive (RPI-RP2)
 //                   "H 0" / "H 1"         -> F13-F23 keyboard presses off / on
@@ -25,8 +27,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <Keyboard.h>
+#include <tusb.h>
 
-#define FW_VERSION "0.4"
+#define FW_VERSION "0.5"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -63,6 +66,13 @@ GFXcanvas16 frame(SW, SH);
 uint16_t boxes[9][BOX * BOX];
 bool hasPicture[9];
 char pageName[40] = "";
+
+// slide animation: the 3x3 area (GRID_W x SH) of the page being left
+#define GRID_W (GX + 3 * BOX + 2 * GAP + 4)   // 176
+uint16_t oldGrid[GRID_W * SH];
+int slideDir = 0;          // set by "A", used by the next "F"
+int slideMs = 180;         // set by "V"
+uint16_t colBuf[SH];       // one screen column on its way to the display
 
 bool state[11];
 uint32_t changedAt[11];
@@ -152,19 +162,55 @@ void composePanel() {
   frame.print("ORVO");
 }
 
+void snapshotGrid() {
+  uint16_t *fb = frame.getBuffer();
+  for (int y = 0; y < SH; y++) memcpy(&oldGrid[y * GRID_W], &fb[y * SW], GRID_W * 2);
+}
+
+float ease(float t) { return t < 0.5f ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); }
+
+// Slides the new 3x3 (already composed in frame) over the old one (oldGrid).
+void slideGrid(int dir) {
+  uint16_t *fb = frame.getBuffer();
+  uint32_t start = millis();
+  for (;;) {
+    float t = slideMs > 0 ? (millis() - start) / (float)slideMs : 1.0f;
+    if (t > 1) t = 1;
+    int o = (int)(ease(t) * GRID_W + 0.5f);       // how far the new page has come in
+    tft.startWrite();
+    for (int c = GRID_W - 1; c >= 0; c--) {
+      // dir 1: new page enters from the right; dir -1: from the left
+      int src = dir > 0 ? c + o : c - o;
+      bool fromNew = dir > 0 ? src >= GRID_W : src < 0;
+      if (fromNew) src = dir > 0 ? src - GRID_W : src + GRID_W;
+      for (int r = 0; r < SH; r++) colBuf[r] = fromNew ? fb[r * SW + src] : oldGrid[r * GRID_W + src];
+      tft.setAddrWindow(c, 0, 1, SH);
+      tft.writePixels(colBuf, SH, true, false);
+    }
+    tft.endWrite();
+    if (t >= 1) break;
+  }
+}
+
 void composeAll() {
   frame.fillScreen(C_BG);
   for (int i = 0; i < 9; i++) composeBox(i);
   composePanel();
 }
 
-void push(int16_t x, int16_t y, int16_t w, int16_t h) {
-  uint16_t *fb = frame.getBuffer();
+// The panel refreshes along the long side (it is a portrait panel turned sideways), so the
+// picture is sent one column at a time in that same direction. Sent row by row (across the
+// refresh) a change shows up as a diagonal tear; along it, at most a straight edge for one frame.
+void pushColumns(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t *src, int stride, int srcX) {
   tft.startWrite();
-  tft.setAddrWindow(x, y, w, h);
-  for (int r = 0; r < h; r++) tft.writePixels(&fb[(y + r) * SW + x], w, true, false);
+  for (int c = w - 1; c >= 0; c--) {
+    for (int r = 0; r < h; r++) colBuf[r] = src[(y + r) * stride + srcX + c];
+    tft.setAddrWindow(x + c, y, 1, h);
+    tft.writePixels(colBuf, h, true, false);
+  }
   tft.endWrite();
 }
+void push(int16_t x, int16_t y, int16_t w, int16_t h) { pushColumns(x, y, w, h, frame.getBuffer(), SW, x); }
 void pushAll() { push(0, 0, SW, SH); }
 
 // Old text labels ("L<n> text") are turned into a simple picture so older plugins still work.
@@ -199,22 +245,25 @@ void splash() {
 }
 
 void setup() {
-  for (int i = 0; i < 11; i++) pinMode(KEY_PINS[i], INPUT_PULLUP);
-
+  // Backlight off first: at power-up the panel's memory holds random noise.
   pinMode(PIN_BL, OUTPUT);
-  digitalWrite(PIN_BL, HIGH);
+  digitalWrite(PIN_BL, LOW);
+  for (int i = 0; i < 11; i++) pinMode(KEY_PINS[i], INPUT_PULLUP);
 
   SPI.setSCK(PIN_SCK);
   SPI.setTX(PIN_MOSI);
   tft.init(172, 320);
   tft.setSPISpeed(62500000);
   tft.setRotation(1);               // landscape 320 x 172
+  uint8_t rate = 0x01;              // FRCTRL2: ~111 Hz refresh instead of 60 Hz
+  tft.sendCommand(0xC6, &rate, 1);
 
   Serial.begin(115200);
   Serial.setTimeout(500);
   Keyboard.begin();
 
-  splash();
+  splash();                         // screen is clean now: light it up
+  digitalWrite(PIN_BL, HIGH);
   delay(1000);
   for (int i = 0; i < 9; i++) {
     char t[3];
@@ -268,9 +317,20 @@ void handleSerial() {
     } else if (buf[0] == 'P') {
       strncpy(pageName, buf[1] == ' ' ? buf + 2 : buf + 1, sizeof pageName - 1);
       pageName[sizeof pageName - 1] = 0;
+    } else if (buf[0] == 'A') {                       // next page change slides in
+      slideDir = atoi(buf + 1) < 0 ? -1 : 1;
+      snapshotGrid();
+    } else if (buf[0] == 'V') {
+      slideMs = constrain(atoi(buf + 1), 0, 1000);
     } else if (buf[0] == 'F') {
       composeAll();
-      pushAll();
+      if (slideDir != 0 && slideMs > 0) {
+        slideGrid(slideDir);
+        push(GRID_W, 0, SW - GRID_W, SH);
+      } else {
+        pushAll();
+      }
+      slideDir = 0;
     } else if (buf[0] == 'L') {                       // old text labels
       int k = atoi(buf + 1);
       char *sp = strchr(buf, ' ');
@@ -298,8 +358,22 @@ void handleSerial() {
   }
 }
 
+// Screen off while the PC is asleep or the USB cable carries power only.
+void watchHost(uint32_t now) {
+  static uint32_t last = 0;
+  static bool lit = true;
+  if (now - last < 250) return;
+  last = now;
+  bool awake = tud_mounted() && !tud_suspended();
+  if (awake != lit) {
+    lit = awake;
+    digitalWrite(PIN_BL, awake ? HIGH : LOW);
+  }
+}
+
 void loop() {
   uint32_t now = millis();
+  watchHost(now);
   for (int i = 0; i < 11; i++) {
     bool p = digitalRead(KEY_PINS[i]) == LOW;
     if (p != state[i] && now - changedAt[i] > 8) {     // 8 ms debounce

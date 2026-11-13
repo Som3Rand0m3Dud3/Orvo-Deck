@@ -155,7 +155,7 @@
 	"settings.updates.check": "Check for updates",
 	"settings.updates.checking": "Checking…",
 	"settings.updates.choose": "Version:",
-	"settings.updates.confirm": "Orvo Studio will close, and the {{TAG}} installer will open.\n\nContinue?",
+	"settings.updates.confirm": "Orvo Studio will update to {{TAG}} by itself: it closes, installs, starts again and then updates your pad if needed.\n\nContinue?",
 	"settings.updates.current": "You have v{{VERSION}}",
 	"settings.updates.error": "Couldn't reach GitHub. Check your internet and try again.",
 	"settings.updates.install": "Install",

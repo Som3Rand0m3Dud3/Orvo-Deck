@@ -47,3 +47,19 @@ pub async fn orvo_page_images(device: String, profile: String, images: Vec<Optio
 	.await?;
 	Ok(())
 }
+
+/// Slide speed for page changes on the pad (ms, 0 = off), chosen in Settings.
+#[command]
+pub async fn orvo_pad_settings(slide_ms: u32) -> Result<(), Error> {
+	crate::events::outbound::orvo_send_to_plugin(NINEDECK_PLUGIN, &serde_json::json!({ "event": "orvoPadSettings", "slideMs": slide_ms.min(1000) })).await?;
+	Ok(())
+}
+
+/// True once after Orvo Studio updated itself, so the app can update the pad straight after.
+#[command]
+pub fn orvo_take_update_marker() -> bool {
+	let marker = crate::shared::config_dir().join("orvo-update-pending");
+	let present = marker.exists();
+	let _ = std::fs::remove_file(marker);
+	present
+}

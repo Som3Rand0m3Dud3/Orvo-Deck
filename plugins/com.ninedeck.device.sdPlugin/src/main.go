@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -135,6 +136,7 @@ func main() {
 			Image      *string `json:"image"`
 			Profile    string  `json:"profile"`
 			Images     []*string `json:"images"`
+			SlideMs    *int      `json:"slideMs"`
 		}
 		json.Unmarshal(msg, &ev)
 		switch ev.Event {
@@ -145,6 +147,15 @@ func main() {
 					img = *ev.Image
 				}
 				queuePicture(ev.Device, ev.Profile, *ev.Position, img)
+			}
+		case "orvoPadSettings":
+			if ev.SlideMs != nil {
+				slideMs.Store(int32(*ev.SlideMs))
+				padsMu.Lock()
+				for _, p := range pads {
+					applySettings(p)
+				}
+				padsMu.Unlock()
 			}
 		case "orvoPageImages":
 			go storePage(ev.Device, ev.Profile, ev.Images)
@@ -269,6 +280,7 @@ func tryOpen(portName, serialNo string) {
 	if p.box > 0 {
 		p.page = selectedProfile(p.id)
 		p.pageSet = pageLabel(p.id)
+		applySettings(p)
 		p.write("P " + p.pageSet)
 		p.write("F")
 	} // OpenDeck handles the keys now, so the F13-F23 presses are off
@@ -525,6 +537,9 @@ func flipPage(p *pad, step int) {
 		p.pending = map[int][]byte{}
 		cached, ok := pageCache(device, next)
 		p.pmu.Unlock()
+		if ok && !newer("0.5", p.fw) {
+			p.write(fmt.Sprintf("A %d", step)) // slide the new page in from the side of the key pressed
+		}
 		if ok {
 			for pos := 0; pos < 9; pos++ {
 				sendBox(p, pos, cached[pos])
@@ -540,6 +555,17 @@ func flipPage(p *pad, step int) {
 			time.Sleep(400 * time.Millisecond)
 			kickLabels()
 		}()
+	}
+}
+
+// slide speed chosen in Orvo Studio (ms, 0 = no slide)
+var slideMs atomic.Int32
+
+func init() { slideMs.Store(180) }
+
+func applySettings(p *pad) {
+	if p.box > 0 && !newer("0.5", p.fw) {
+		p.write(fmt.Sprintf("V %d", slideMs.Load()))
 	}
 }
 
@@ -768,7 +794,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.4"
+const latestFirmware = "0.5"
 
 var (
 	updMu    sync.Mutex

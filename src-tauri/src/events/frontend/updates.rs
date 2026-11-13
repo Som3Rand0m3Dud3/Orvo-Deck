@@ -111,10 +111,29 @@ pub async fn install(app: &AppHandle, tag: &str) -> Result<(), anyhow::Error> {
 
 	let bytes = reqwest::Client::new().get(&url).header("User-Agent", USER_AGENT).send().await?.error_for_status()?.bytes().await?;
 	let file_name = url.rsplit('/').next().unwrap_or("OrvoStudio-setup.exe").to_owned();
-	let path = std::env::temp_dir().join(file_name);
-	tokio::fs::write(&path, &bytes).await?;
+	let installer = std::env::temp_dir().join(file_name);
+	tokio::fs::write(&installer, &bytes).await?;
 
-	std::process::Command::new(&path).spawn()?;
+	// Remember to update the pad too once the new version starts.
+	let _ = std::fs::write(crate::shared::config_dir().join("orvo-update-pending"), tag);
+
+	// One click: a hidden helper waits for Orvo Studio to close, runs the installer in passive
+	// mode (progress bar only, no questions), deletes the installer and starts the new version.
+	let exe = std::env::current_exe()?;
+	let quote = |p: &std::path::Path| p.to_string_lossy().replace('\'', "''");
+	let script = format!(
+		"Start-Sleep -Milliseconds 800; Start-Process -FilePath '{installer}' -ArgumentList '/P' -Wait; Remove-Item -LiteralPath '{installer}' -Force -ErrorAction SilentlyContinue; Start-Process -FilePath '{exe}'",
+		installer = quote(&installer),
+		exe = quote(&exe),
+	);
+	let mut command = std::process::Command::new("powershell");
+	command.args(["-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", &script]);
+	#[cfg(windows)]
+	{
+		use std::os::windows::process::CommandExt;
+		command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+	}
+	command.spawn()?;
 	app.exit(0);
 	Ok(())
 }

@@ -21,6 +21,21 @@
 	$: currentVersion = buildInfo?.match(/v(\d+\.\d+\.\d+[^\s<]*)/)?.[1] ?? "";
 	$: newest = releases?.find((r) => r.newer);
 
+	// Page slide speed on the pad (ms, 0 = off)
+	const SLIDE_PRESETS: [string, number][] = [["Off", 0], ["Fast", 110], ["Normal", 180], ["Slow", 320]];
+	let slideMs = 180;
+	try {
+		const saved = localStorage.getItem("orvo-slide-ms");
+		if (saved != null) slideMs = parseInt(saved) || 0;
+	} catch {}
+	function setSlide(value: number) {
+		slideMs = value;
+		try {
+			localStorage.setItem("orvo-slide-ms", String(value));
+		} catch {}
+		invoke("orvo_pad_settings", { slideMs: value }).catch(() => {});
+	}
+
 	let testVersions = true;
 	try {
 		const saved = localStorage.getItem("orvo-test-versions");
@@ -127,6 +142,25 @@
 		<div role="group" aria-label="Appearance" class="flex gap-1 p-1 rounded-xl bg-neutral-700">
 			<button class="px-4 h-9 rounded-lg text-sm" class:bg-neutral-900={theme == "dark"} class:text-neutral-100={theme == "dark"} on:click={() => setTheme("dark")}>Dark</button>
 			<button class="px-4 h-9 rounded-lg text-sm" class:bg-neutral-900={theme == "light"} class:text-neutral-100={theme == "light"} on:click={() => setTheme("light")}>Light</button>
+		</div>
+	</div>
+
+	<div class="mx-2 mb-3 p-3 border border-neutral-600 rounded-lg">
+		<p class="font-semibold text-neutral-300">Pad</p>
+		<div class="flex flex-row flex-wrap items-center gap-2 mt-2">
+			<span class="text-neutral-400">Page slide speed:</span>
+			{#each SLIDE_PRESETS as [label, ms]}
+				<button
+					class="px-3 h-9 rounded-lg text-sm border border-neutral-600"
+					class:bg-neutral-900={slideMs == ms}
+					class:text-neutral-100={slideMs == ms}
+					on:click={() => setSlide(ms)}>{label}</button
+				>
+			{/each}
+		</div>
+		<div class="flex flex-row items-center gap-3 mt-2">
+			<input type="range" min="0" max="500" step="10" value={slideMs} on:change={(e) => setSlide(parseInt(e.currentTarget.value))} aria-label="Page slide speed in milliseconds" />
+			<span class="text-sm text-neutral-400 tabular-nums">{slideMs == 0 ? "no slide" : `${slideMs} ms`}</span>
 		</div>
 	</div>
 
