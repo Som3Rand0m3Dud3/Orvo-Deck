@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "opendeck"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "active-win-pos-rs",
  "anyhow",

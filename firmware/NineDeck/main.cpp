@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.7 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// NineDeck test-jig firmware v0.8 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -18,7 +18,8 @@
 //                   "V <ms>"              -> slide duration (0 = no slide)
 //                   "N1 <text>"           -> name of what the slider controls (shown while moving it)
 //                   "T 0" / "T 1"         -> slider is linear (B) / audio-taper (A)
-//                   "C"                   -> calibrate the slider (bottom, middle, top; confirm each with key 1)
+//                   "C"                   -> calibrate the slider at 5 points (bottom, 1/4, middle, 3/4, top; key 1 confirms)
+//                   "R 0" / "R 1"         -> slider direction normal / flipped
 //   device -> PC :  "S1 <0-1000>"         -> slider position (only when it moves)
 // Slider: linear pot, ends on 3V3 and GND, wiper on GP26 (ADC0).
 //                   "L<n> <text>"         -> (old) text label, drawn as a picture
@@ -35,7 +36,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.7"
+#define FW_VERSION "0.8"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -89,12 +90,12 @@ char sliderName[24] = "Slider";
 
 // Slider calibration, kept in flash. Without a calibration the pad learns the real ends
 // as you slide; "audio" undoes the log curve of A-type pots.
-struct SliderCal { uint32_t magic; float lo, mid, hi; uint8_t audio, hasMid; };
-const uint32_t CAL_MAGIC = 0x4F52564F;      // "ORVO"
-SliderCal cal = {CAL_MAGIC, 4095, -1, 0, 0, 0};
+struct SliderCal { uint32_t magic; float lo, mid, hi; uint8_t audio, hasMid; float pt[5]; uint8_t hasPts, flip; };
+const uint32_t CAL_MAGIC = 0x4F525632;      // "ORV2"
+SliderCal cal = {CAL_MAGIC, 4095, -1, 0, 0, 0, {0, 0, 0, 0, 0}, 0, 0};
 bool calDirty = false;
 uint32_t calChangedAt = 0;
-int calStep = -1;                            // -1 = not calibrating, 0 bottom, 1 middle, 2 top
+int calStep = -1;                            // -1 = not calibrating, 0..4 = bottom .. top
 void drawCalStep();
 
 void loadCal() {
@@ -111,7 +112,7 @@ void saveCal() {
 
 // raw ADC (0..4095, smoothed) -> 0..1000
 int sliderValue(float raw) {
-  if (calStep < 0 && !cal.hasMid) {           // learn the real ends
+  if (calStep < 0 && !cal.hasPts) {           // learn the real ends
     if (raw < cal.lo - 8 || raw > cal.hi + 8) {
       cal.lo = min(cal.lo, raw);
       cal.hi = max(cal.hi, raw);
@@ -122,8 +123,16 @@ int sliderValue(float raw) {
   float lo = cal.lo, hi = cal.hi;
   if (hi - lo < 600) { lo = 40; hi = 4055; }  // not learned yet
   float x;
-  if (cal.hasMid && cal.mid > lo && cal.mid < hi) {          // 3-point calibration
-    x = raw <= cal.mid ? 0.5f * (raw - lo) / (cal.mid - lo) : 0.5f + 0.5f * (raw - cal.mid) / (hi - cal.mid);
+  if (cal.hasPts) {                                          // 5-point calibration
+    const float *p = cal.pt;
+    if (raw <= p[0]) x = 0;
+    else if (raw >= p[4]) x = 1;
+    else {
+      int i = 0;
+      while (i < 3 && raw > p[i + 1]) i++;
+      float span = p[i + 1] - p[i];
+      x = (i + (span > 0 ? (raw - p[i]) / span : 0)) * 0.25f;
+    }
   } else {
     float r = (raw - lo) / (hi - lo);
     if (r < 0) r = 0;
@@ -131,7 +140,8 @@ int sliderValue(float raw) {
     // A-type pots: about 10 % of the signal at half travel; undo that curve
     x = cal.audio ? logf(1 + r * 80.0f) / logf(81.0f) : r;
   }
-  return constrain((int)(x * 1000 + 0.5f), 0, 1000);
+  int v = constrain((int)(x * 1000 + 0.5f), 0, 1000);
+  return cal.flip ? 1000 - v : v;
 }
 
 
@@ -408,6 +418,9 @@ void handleSerial() {
     } else if (buf[0] == 'T') {
       uint8_t a = atoi(buf + 1) ? 1 : 0;
       if (a != cal.audio) { cal.audio = a; saveCal(); sliderSent = -1; }
+    } else if (buf[0] == 'R') {
+      uint8_t f = atoi(buf + 1) ? 1 : 0;
+      if (f != cal.flip) { cal.flip = f; saveCal(); sliderSent = -1; }
     } else if (buf[0] == 'C') {
       calStep = 0;
       drawCalStep();
@@ -467,7 +480,7 @@ void watchHost(uint32_t now) {
 
 // on-screen calibration steps
 void drawCalStep() {
-  static const char *steps[] = {"Slide to the BOTTOM", "Slide to the MIDDLE", "Slide to the TOP"};
+  static const char *steps[] = {"Slide to the BOTTOM", "Slide to 1/4", "Slide to the MIDDLE", "Slide to 3/4", "Slide to the TOP"};
   frame.fillRect(PX, GY + PKH + 4, SW - PX, SH - (GY + PKH + 4), C_BG);
   frame.setTextColor(C_ORANGE);
   frame.setTextSize(1);
@@ -480,24 +493,24 @@ void drawCalStep() {
   frame.setCursor(PX + 6, GY + PKH + 56);
   frame.print("then press key 1");
   char st[8];
-  snprintf(st, sizeof st, "%d / 3", calStep + 1);
+  snprintf(st, sizeof st, "%d / 5", calStep + 1);
   frame.setCursor(PX + 6, SH - 16);
   frame.print(st);
   push(PX, 0, SW - PX, SH);
 }
 
-// Reads the slider every 4 ms, smooths it, and reports changes of more than ~0.4 %.
+// Reads the slider every 2 ms, smooths it lightly, and reports changes of 0.2 % or more.
 void readSlider(uint32_t now) {
   static uint32_t last = 0, drawnAt = 0;
-  if (now - last < 4) return;
+  if (now - last < 2) return;
   last = now;
   int raw = analogRead(PIN_SLIDER);
-  sliderAvg = sliderAvg < 0 ? raw : sliderAvg * 0.85f + raw * 0.15f;
+  sliderAvg = sliderAvg < 0 ? raw : sliderAvg * 0.7f + raw * 0.3f;
   // small dead zones at both ends so 0 % and 100 % are easy to reach
   if (calStep >= 0) return;                 // calibrating: don't report
   int v = sliderValue(sliderAvg);
   if (calDirty && now - calChangedAt > 3000) saveCal();   // learned ends: save once you stop
-  if (sliderSent < 0 || abs(v - sliderSent) >= 4 || ((v == 0 || v == 1000) && v != sliderSent)) {
+  if (sliderSent < 0 || abs(v - sliderSent) >= 2 || ((v == 0 || v == 1000) && v != sliderSent)) {
     bool first = sliderSent < 0;
     sliderSent = v;
     Serial.print("S1 "); Serial.println(v);
@@ -507,7 +520,7 @@ void readSlider(uint32_t now) {
     }
   }
   // feedback on the screen while moving (at most every 30 ms), then back to the page name
-  if (sliderShown && now - drawnAt > 30 && now - sliderMovedAt < 40) {
+  if (sliderShown && now - drawnAt > 20 && drawnAt < sliderMovedAt) {
     drawnAt = now;
     composePanel();
     push(PX, 0, SW - PX, SH);
@@ -529,14 +542,16 @@ void loop() {
       changedAt[i] = now;
       if (calStep >= 0) {                     // calibrating: key 1 confirms the step
         if (i == 0 && p) {
-          float raw = sliderAvg;
-          if (calStep == 0) cal.lo = raw;
-          else if (calStep == 1) cal.mid = raw;
-          else cal.hi = raw;
-          if (++calStep > 2) {
+          cal.pt[calStep] = sliderAvg;
+          if (++calStep > 4) {
             calStep = -1;
-            if (cal.hi < cal.lo) { float t = cal.hi; cal.hi = cal.lo; cal.lo = t; }
-            cal.hasMid = cal.mid > cal.lo && cal.mid < cal.hi;
+            // points measured with the pot mounted the other way round: store them low to high
+            if (cal.pt[0] > cal.pt[4]) for (int a = 0, b = 4; a < b; a++, b--) { float t = cal.pt[a]; cal.pt[a] = cal.pt[b]; cal.pt[b] = t; }
+            bool ok = true;
+            for (int k = 0; k < 4; k++) if (cal.pt[k + 1] <= cal.pt[k]) ok = false;
+            cal.hasPts = ok;
+            cal.lo = cal.pt[0];
+            cal.hi = cal.pt[4];
             saveCal();
             sliderSent = -1;
             composePanel();

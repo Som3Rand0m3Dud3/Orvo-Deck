@@ -69,6 +69,7 @@ pub enum InboundEventType {
 	SwitchProfile(misc::SwitchProfileEvent),
 	DeviceBrightness(misc::DeviceBrightnessEvent),
 	OrvoPadStatus(PayloadEvent<serde_json::Value>),
+	OrvoSlider(PayloadEvent<serde_json::Value>),
 }
 
 pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, skip_auth: bool) {
@@ -112,7 +113,7 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 				if event.context != uuid {
 					return;
 				}
-			} else if matches!(decoded, InboundEventType::OrvoPadStatus(_)) && uuid != crate::events::frontend::pad::NINEDECK_PLUGIN {
+			} else if matches!(decoded, InboundEventType::OrvoPadStatus(_) | InboundEventType::OrvoSlider(_)) && uuid != crate::events::frontend::pad::NINEDECK_PLUGIN {
 				return;
 			} else if matches!(decoded, InboundEventType::SwitchProfile(_) | InboundEventType::DeviceBrightness(_))
 				&& uuid != "com.amansprojects.starterpack.sdPlugin"
@@ -171,6 +172,7 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 			InboundEventType::SwitchProfile(event) => misc::switch_profile(event).await,
 			InboundEventType::DeviceBrightness(event) => misc::device_brightness(event).await,
 			InboundEventType::OrvoPadStatus(event) => crate::events::frontend::pad::forward_status(event.payload).await,
+			InboundEventType::OrvoSlider(event) => crate::events::frontend::pad::forward_slider(event.payload).await,
 		} && !error.to_string().contains("closed connection")
 		{
 			warn!("Failed to process incoming event from plugin: {}", error);

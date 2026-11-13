@@ -10,6 +10,8 @@
 	import { t } from "$lib/i18n";
 	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
 	import { profileManager } from "$lib/singletons";
+	import { listen } from "@tauri-apps/api/event";
+	import { onDestroy } from "svelte";
 
 	import { invoke } from "@tauri-apps/api/core";
 
@@ -75,6 +77,14 @@
 			profile = profile;
 		}
 	}
+
+	// Orvo: NineDeck shows its slider as a tall bar beside the keys, moving live with the real one.
+	$: isNineDeck = device.id.startsWith("nd-");
+	let sliderValue: number | null = null;
+	const unlistenSlider = listen("pad_slider", ({ payload }: { payload: { device: string; value: number } }) => {
+		if (payload.device == device.id) sliderValue = payload.value;
+	});
+	onDestroy(() => unlistenSlider.then((f) => f()));
 
 	// Page bar under the pad: the same ◀ ▶ the pad's page keys use.
 	let pages: string[] = [];
@@ -200,6 +210,7 @@
 			<span class="text-sm text-neutral-400">Page {pageIndex + 1} of {Math.max(pages.length, 1)} · click a box to edit it</span>
 		</div>
 		<div class="p-5 rounded-3xl bg-neutral-900 border border-neutral-700" style="box-shadow: var(--orvo-shadow)">
+		<div class="flex flex-row items-start gap-6">
 		<div class="flex flex-col" role="rowgroup">
 			{#each { length: device.rows } as _, r}
 				<div class="flex flex-row" role="row">
@@ -220,7 +231,36 @@
 			{/each}
 		</div>
 
-		<div class="flex flex-row justify-between" role="row" style={`width: ${keypadRowWidth}px;`}>
+		{#if isNineDeck && device.encoders > 0}
+			<div class="flex flex-col gap-3" role="row" aria-label="Sliders">
+				{#each { length: device.encoders } as _, i}
+					<div
+						class="relative flex flex-col items-center justify-center w-[148px] rounded-2xl border border-neutral-600 bg-neutral-800 overflow-hidden"
+						style={`height: ${Math.round(2.5 * 132)}px`}
+						role="gridcell"
+						aria-label="Slider {i + 1}{sliderValue != null ? `, ${Math.round(sliderValue / 10)}%` : ''}"
+					>
+						<div class="absolute left-0 right-0 bottom-0 transition-[height] duration-75" style={`height: ${(sliderValue ?? 0) / 10}%; background: var(--orvo-accent); opacity: 0.28`}></div>
+						<div class="absolute left-1/2 -translate-x-1/2 top-3 bottom-3 w-1.5 rounded-full bg-neutral-600"></div>
+						<span class="absolute top-2 left-0 right-0 text-center text-xs font-semibold text-neutral-200 tabular-nums">{sliderValue != null ? `${Math.round(sliderValue / 10)}%` : "Slider"}</span>
+						<Key
+							context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
+							bind:inslot={profile.sliders[i]}
+							on:dragover={handleDragOver}
+							on:drop={(event) => handleDrop(event, "Encoder", i)}
+							on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
+							{handlePaste}
+							square={true}
+							label="Slider {i + 1}"
+							tabindex={-1}
+						/>
+					</div>
+				{/each}
+			</div>
+		{/if}
+		</div>
+
+		<div class="flex flex-row justify-between" role="row" style={`width: ${keypadRowWidth}px;`} class:hidden={isNineDeck}>
 			{#each { length: device.encoders } as _, i}
 				<Key
 					context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}

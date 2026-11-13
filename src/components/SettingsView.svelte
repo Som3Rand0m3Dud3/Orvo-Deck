@@ -48,9 +48,20 @@
 		} catch {}
 		invoke("orvo_pad_settings", { taper: value }).catch(() => {});
 	}
+	let flip = false;
+	try {
+		flip = localStorage.getItem("orvo-slider-flip") == "1";
+	} catch {}
+	function setFlip(value: boolean) {
+		flip = value;
+		try {
+			localStorage.setItem("orvo-slider-flip", value ? "1" : "0");
+		} catch {}
+		invoke("orvo_pad_settings", { flip: value }).catch(() => {});
+	}
 	function recalibrate() {
 		invoke("orvo_pad_settings", { recalibrate: true }).catch(() => {});
-		message("Look at the pad's screen: slide to the bottom, the middle and the top, pressing key 1 at each step.", { title: "Slider calibration", kind: "info" });
+		message("Look at the pad's screen. Slide to each point it asks for and press key 1:\n\n1. Bottom\n2. One quarter up\n3. Middle\n4. Three quarters up\n5. Top", { title: "Slider calibration (test)", kind: "info" });
 	}
 
 	let testVersions = true;
@@ -183,7 +194,8 @@
 			<span class="text-neutral-400">Slider type:</span>
 			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" class:bg-neutral-900={taper == 0} class:text-neutral-100={taper == 0} on:click={() => setTaper(0)}>Linear (B)</button>
 			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" class:bg-neutral-900={taper == 1} class:text-neutral-100={taper == 1} on:click={() => setTaper(1)}>Audio (A)</button>
-			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" on:click={recalibrate}>Recalibrate…</button>
+			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" on:click={recalibrate}>Calibrate slider (test)…</button>
+			<label class="flex items-center gap-2 ml-2 text-sm text-neutral-400"><input type="checkbox" checked={flip} on:change={(e) => setFlip(e.currentTarget.checked)} /> Flip direction</label>
 		</div>
 	</div>
 

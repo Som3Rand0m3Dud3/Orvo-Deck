@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -72,7 +73,38 @@ func updateSliderName(device string) {
 	}
 }
 
+// The app's slider bar follows the real one: send the newest position, at most ~30 times a second.
+var (
+	uiMu    sync.Mutex
+	uiLast  = map[string]time.Time{}
+	uiTimer = map[string]*time.Timer{}
+	uiValue = map[string]int{}
+)
+
+func showInApp(device string, v int) {
+	uiMu.Lock()
+	defer uiMu.Unlock()
+	uiValue[device] = v
+	sendNow := func() {
+		uiMu.Lock()
+		val := uiValue[device]
+		uiLast[device] = time.Now()
+		uiTimer[device] = nil
+		uiMu.Unlock()
+		send(map[string]any{"event": "orvoSlider", "payload": map[string]any{"device": device, "value": val}})
+	}
+	if wait := 33*time.Millisecond - time.Since(uiLast[device]); wait > 0 {
+		if uiTimer[device] == nil {
+			uiTimer[device] = time.AfterFunc(wait, sendNow)
+		}
+		return
+	}
+	uiLast[device] = time.Now()
+	go send(map[string]any{"event": "orvoSlider", "payload": map[string]any{"device": device, "value": v}})
+}
+
 func sliderMoved(p *pad, v int) {
+	showInApp(p.id, v)
 	slMu.Lock()
 	last, had := slLast[p.id]
 	slLast[p.id] = v

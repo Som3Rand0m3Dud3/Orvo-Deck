@@ -69,6 +69,22 @@
 		refresh();
 	}
 
+	// "+ New page": make the page straight away and let you name it in place.
+	async function newPage() {
+		let n = pages.length + 1;
+		let id = `Page ${n}`;
+		while (pages.includes(id)) id = `Page ${++n}`;
+		try {
+			await $profileManager?.setProfile(id);
+			await new Promise((r) => setTimeout(r, 120));
+			await refresh();
+			$profileManager?.reload();
+			startRename(id);
+		} catch (error) {
+			message(String(error), { title: "New page", kind: "error" });
+		}
+	}
+
 	async function duplicate(id: string) {
 		menu = null;
 		let n = 1;
@@ -154,9 +170,9 @@
 	{/each}
 	<button
 		class="flex items-center gap-3 min-h-11 px-3 rounded-xl border border-dashed border-neutral-600 text-neutral-400 hover:text-neutral-200 transition-colors"
-		on:click={() => $profileManager?.openManager()}
+		on:click={newPage}
 	>
-		<span class="w-6 text-center text-lg leading-none">+</span>New page / manage
+		<span class="w-6 text-center text-lg leading-none">+</span>New page
 	</button>
 </div>
 
@@ -166,6 +182,7 @@
 		class="fixed z-50 w-40 py-1 rounded-xl bg-neutral-800 border border-neutral-600 text-sm text-neutral-200 shadow-xl"
 		style="left: {menu.x}px; top: {menu.y}px"
 	>
+		<button role="menuitem" class="w-full px-3 py-2 text-left hover:bg-neutral-700" on:click|stopPropagation={() => { if (menu) $profileManager?.setProfile(menu.id); menu = null; }}>Edit</button>
 		<button role="menuitem" class="w-full px-3 py-2 text-left hover:bg-neutral-700" on:click|stopPropagation={() => menu && startRename(menu.id)}>Rename</button>
 		<button role="menuitem" class="w-full px-3 py-2 text-left hover:bg-neutral-700" on:click|stopPropagation={() => menu && duplicate(menu.id)}>Duplicate</button>
 		<button role="menuitem" class="w-full px-3 py-2 text-left text-red-400 hover:bg-neutral-700" on:click|stopPropagation={() => menu && remove(menu.id)}>Delete</button>

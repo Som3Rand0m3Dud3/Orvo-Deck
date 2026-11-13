@@ -14,6 +14,12 @@ pub async fn forward_status(payload: serde_json::Value) -> Result<(), anyhow::Er
 	Ok(())
 }
 
+pub async fn forward_slider(payload: serde_json::Value) -> Result<(), anyhow::Error> {
+	let app = crate::APP_HANDLE.get().unwrap();
+	app.get_webview_window("main").unwrap().emit("pad_slider", payload)?;
+	Ok(())
+}
+
 #[command]
 pub async fn request_pad_status() -> Result<(), Error> {
 	crate::events::outbound::orvo_send_to_plugin(NINEDECK_PLUGIN, &serde_json::json!({ "event": "orvoPadStatusRequest" })).await?;
@@ -50,8 +56,11 @@ pub async fn orvo_page_images(device: String, profile: String, images: Vec<Optio
 
 /// Slide speed for page changes on the pad (ms, 0 = off), chosen in Settings.
 #[command]
-pub async fn orvo_pad_settings(slide_ms: Option<u32>, taper: Option<u8>, recalibrate: Option<bool>) -> Result<(), Error> {
+pub async fn orvo_pad_settings(slide_ms: Option<u32>, taper: Option<u8>, recalibrate: Option<bool>, flip: Option<bool>) -> Result<(), Error> {
 	let mut msg = serde_json::json!({ "event": "orvoPadSettings" });
+	if let Some(f) = flip {
+		msg["flip"] = (f as u32).into();
+	}
 	if let Some(ms) = slide_ms {
 		msg["slideMs"] = ms.min(1000).into();
 	}
