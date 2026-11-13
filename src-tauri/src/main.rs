@@ -106,6 +106,8 @@ async fn main() {
 			frontend::settings::get_build_info,
 			frontend::settings::backup_config_directory,
 			frontend::settings::restore_config_directory,
+			frontend::updates::list_releases,
+			frontend::updates::install_release,
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();
@@ -134,66 +136,33 @@ async fn main() {
 			}
 
 			let mut settings = store::get_settings();
-			use std::cmp::Ordering;
 			use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 			let current_version = semver::Version::parse(built_info::PKG_VERSION)?;
 			let settings_version = semver::Version::parse(&settings.value.version)?;
-			let cmp = (current_version.major, current_version.minor).cmp(&(settings_version.major, settings_version.minor));
-			match cmp {
-				Ordering::Less => {
-					app.get_webview_window("main").unwrap().close().unwrap();
-					app.dialog()
-						.message(format!(
-							"A newer version of {PRODUCT_NAME} created configuration files on this device. This version is v{}; please upgrade to v{} or newer.",
-							built_info::PKG_VERSION,
-							settings.value.version
-						))
-						.title(format!("{PRODUCT_NAME} upgrade required"))
-						.kind(MessageDialogKind::Error)
-						.show(|_| APP_HANDLE.get().unwrap().exit(1));
-					return Ok(());
-				}
-				Ordering::Greater => {
-					let old_version = settings.value.version.clone();
-					settings.value.version = built_info::PKG_VERSION.to_owned();
-					settings.save()?;
-					if old_version == "0.0.0" {
-						app.dialog()
-							.message(format!(
-								r#"Thanks for installing {PRODUCT_NAME}!
-If you have any issues, please reach out on any of the support channels listed on GitHub (and make sure to star the project while you're there!).
-
-Some minimal statistics (such as operating system and plugins installed) will be collected from the next time the app starts.
-If you do not wish to support development in this way, please disable statistics in the settings.
-
-Enjoy!"#,
-							))
-							.title(format!("{PRODUCT_NAME} has successfully been installed"))
-							.kind(MessageDialogKind::Info)
-							.show(|_| ());
-						settings.value.statistics = false;
-					} else {
-						app.dialog()
-							.message(format!(
-								r#"{PRODUCT_NAME} has been updated to v{}!
-Every update brings features, bug fixes, and other improvements, which I spend my time implementing for free.
-
-If you spent $125 on your hardware, please consider spending $10 on the software that makes it work.
-You can donate to support development with just a few clicks on GitHub Sponsors, Ko-fi or Liberapay.
-If you have already donated, thank you so much for your support!"#,
-								built_info::PKG_VERSION
-							))
-							.title(format!("{PRODUCT_NAME} has successfully been updated"))
-							.kind(MessageDialogKind::Info)
-							.show(|_| ());
-					}
-				}
-				_ => {}
+			// Any version change (upgrade or rollback) is allowed, so the version picker can go back and forth.
+			let from_opendeck = settings_version.major >= 2;
+			if current_version != settings_version {
+				let first_run = settings.value.version == "0.0.0" || from_opendeck;
+				settings.value.version = built_info::PKG_VERSION.to_owned();
+				settings.value.statistics = false;
+				settings.save()?;
+				let (title, message) = if first_run {
+					(
+						format!("Welcome to {PRODUCT_NAME}"),
+						format!("Thanks for installing {PRODUCT_NAME} v{}!\nIf you used OpenDeck before, your profiles and plugins were brought over.", built_info::PKG_VERSION),
+					)
+				} else {
+					(
+						format!("{PRODUCT_NAME} updated"),
+						format!("{PRODUCT_NAME} is now on v{} (was v{}).", built_info::PKG_VERSION, settings_version),
+					)
+				};
+				app.dialog().message(message).title(title).kind(MessageDialogKind::Info).show(|_| ());
 			}
 
 			use tauri_plugin_aptabase::{Builder, EventTracker, InitOptions};
 			app.handle().plugin(
-				Builder::new(if settings.value.statistics { "A-SH-3841489320" } else { "" })
+				Builder::new("") // usage statistics are off in Orvo Studio
 					.with_options(InitOptions {
 						host: Some("https://aptabase.amankhanna.me".to_owned()),
 						flush_interval: None,
@@ -269,27 +238,25 @@ If you have already donated, thank you so much for your support!"#,
 			}
 
 			async fn update() -> Result<(), anyhow::Error> {
-				let res = reqwest::Client::new()
-					.get("https://api.github.com/repos/Som3Rand0m3Dud3/orvo-deck/releases/latest")
-					.header("Accept", "application/vnd.github+json")
-					.header("User-Agent", "OrvoStudio")
-					.send()
-					.await?
-					.json::<serde_json::Value>()
-					.await?;
-				let tag_name = res.get("tag_name").unwrap().as_str().unwrap();
-				if semver::Version::parse(built_info::PKG_VERSION)?.cmp(&semver::Version::parse(&tag_name[1..])?) == Ordering::Less {
-					let app = APP_HANDLE.get().unwrap();
-					app.dialog()
-						.message(format!(
-							"A new version of {PRODUCT_NAME}, {}, is available.\nUpdate description:\n\n{}",
-							tag_name,
-							res.get("body").map(|v| v.as_str().unwrap()).unwrap_or("No description").trim()
-						))
-						.title(format!("{PRODUCT_NAME} update available"))
-						.show(|_| ());
-				}
-
+				let releases = frontend::updates::fetch_releases().await?;
+				let Some(latest) = releases.into_iter().find(|r| r.newer) else { return Ok(()) };
+				let app = APP_HANDLE.get().unwrap();
+				let tag = latest.tag.clone();
+				let notes = if latest.notes.is_empty() { "No description".to_owned() } else { latest.notes.clone() };
+				app.dialog()
+					.message(format!("A new version of {PRODUCT_NAME}, {}, is available.\n\nWhat's new:\n{}", latest.tag, notes))
+					.title(format!("{PRODUCT_NAME} update available"))
+					.buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("Update now".to_owned(), "Later".to_owned()))
+					.show(move |yes| {
+						if yes {
+							tokio::spawn(async move {
+								let app = APP_HANDLE.get().unwrap();
+								if let Err(error) = frontend::updates::install(app, &tag).await {
+									log::warn!("Failed to install update: {error}");
+								}
+							});
+						}
+					});
 				Ok(())
 			}
 

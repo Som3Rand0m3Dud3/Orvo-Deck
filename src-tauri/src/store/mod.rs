@@ -156,7 +156,7 @@ impl Default for Settings {
 			autolaunch: false,
 			updatecheck: option_env!("OPENDECK_DISABLE_UPDATE_CHECK").is_none() && !is_flatpak(),
 			// Consent is given by the user on install so it is OK to have the default be `true`
-			statistics: true,
+			statistics: false,
 			separatewine: false,
 			developer: false,
 			disableelgato: false,

@@ -12,7 +12,40 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
-	import { message } from "@tauri-apps/plugin-dialog";
+	import { ask, message } from "@tauri-apps/plugin-dialog";
+
+	type Release = { tag: string; version: string; name: string; notes: string; date: string; page: string; installer: string | null; newer: boolean; current: boolean };
+	let releases: Release[] | null = null;
+	let selectedTag = "";
+	let updateState: "idle" | "checking" | "error" | "installing" = "idle";
+	$: currentVersion = buildInfo?.match(/v(\d+\.\d+\.\d+[^\s<]*)/)?.[1] ?? "";
+	$: newest = releases?.find((r) => r.newer);
+
+	async function checkUpdates() {
+		updateState = "checking";
+		try {
+			releases = await invoke<Release[]>("list_releases");
+			selectedTag = (releases.find((r) => r.newer) ?? releases.find((r) => r.current) ?? releases[0])?.tag ?? "";
+			updateState = "idle";
+		} catch {
+			updateState = "error";
+		}
+	}
+
+	async function installSelected() {
+		const release = releases?.find((r) => r.tag == selectedTag);
+		if (!release || release.current) return;
+		const prompt = release.newer ? $t("settings.updates.confirm", { TAG: release.tag }) : $t("settings.updates.rollback", { TAG: release.tag });
+		if (!(await ask(prompt, { title: $t("settings.updates.title"), kind: release.newer ? "info" : "warning" }))) return;
+		updateState = "installing";
+		try {
+			await invoke("install_release", { tag: release.tag });
+		} catch (error) {
+			updateState = "error";
+			await message(String(error), { title: $t("settings.updates.title"), kind: "error" });
+		}
+		updateState = "idle";
+	}
 
 	let showPopup: boolean;
 	let buildInfo: string;
@@ -141,9 +174,52 @@
 			<input type="checkbox" bind:checked={$settings.updatecheck} id="settings-updatecheck" />
 		</div>
 
-		<div class="flex flex-row items-center m-2 space-x-2">
-			<label for="settings-statistics" class="text-neutral-400">{$t("settings.statistics")}</label>
-			<input type="checkbox" bind:checked={$settings.statistics} id="settings-statistics" />
+		<div class="m-2 p-3 border border-neutral-600 rounded-lg">
+			<div class="flex flex-row items-center space-x-3">
+				<span class="font-semibold text-neutral-300">{$t("settings.updates.title")}</span>
+				{#if currentVersion}<span class="text-sm text-neutral-400">{$t("settings.updates.current", { VERSION: currentVersion })}</span>{/if}
+				<button
+					class="px-2 py-1 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg disabled:opacity-50"
+					disabled={updateState == "checking" || updateState == "installing"}
+					on:click={checkUpdates}
+				>
+					{updateState == "checking" ? $t("settings.updates.checking") : $t("settings.updates.check")}
+				</button>
+			</div>
+
+			{#if updateState == "error"}
+				<p class="mt-2 text-sm text-red-400">{$t("settings.updates.error")}</p>
+			{:else if releases}
+				{#if releases.length == 0}
+					<p class="mt-2 text-sm text-neutral-400">{$t("settings.updates.none")}</p>
+				{:else}
+					<p class="mt-2 text-sm {newest ? 'text-green-400' : 'text-neutral-400'}">
+						{newest ? $t("settings.updates.available", { TAG: newest.tag }) : $t("settings.updates.latest")}
+					</p>
+					<div class="flex flex-row items-center mt-2 space-x-2">
+						<label for="settings-version" class="text-neutral-400">{$t("settings.updates.choose")}</label>
+						<div class="select-wrapper">
+							<select bind:value={selectedTag} class="w-auto pr-10!" id="settings-version">
+								{#each releases as r, i}
+									<option value={r.tag}>
+										{r.tag}{r.date ? ` (${r.date})` : ""}{i == 0 ? ` · ${$t("settings.updates.newest")}` : ""}{r.current ? ` · ${$t("settings.updates.installed")}` : ""}
+									</option>
+								{/each}
+							</select>
+						</div>
+						<button
+							class="px-3 py-1 text-sm text-white bg-blue-600 hover:bg-blue-500 transition-colors rounded-lg disabled:opacity-50"
+							disabled={updateState == "installing" || releases.find((r) => r.tag == selectedTag)?.current}
+							on:click={installSelected}
+						>
+							{updateState == "installing" ? $t("settings.updates.installing") : $t("settings.updates.install")}
+						</button>
+					</div>
+					{#if releases.find((r) => r.tag == selectedTag)?.notes}
+						<pre class="mt-2 max-h-32 overflow-auto whitespace-pre-wrap text-xs text-neutral-400">{releases.find((r) => r.tag == selectedTag)?.notes}</pre>
+					{/if}
+				{/if}
+			{/if}
 		</div>
 
 		{#if !buildInfo?.split("</summary>")[0]?.includes("windows")}
