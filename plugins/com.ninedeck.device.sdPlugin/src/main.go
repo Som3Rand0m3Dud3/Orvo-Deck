@@ -5,6 +5,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/base64"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -46,6 +51,11 @@ type pad struct {
 	sp      serial.Port
 	wmu     sync.Mutex
 	fw      string // firmware version the pad reports, e.g. "0.2"
+	box     int    // box size in pixels when the firmware can show pictures (0.3+), else 0
+	pmu     sync.Mutex
+	pending map[int][]byte // box index -> RGB565 picture (nil = empty), waiting to be sent
+	pageSet string
+	timer   *time.Timer
 	labels  [numKeys]string
 	sent    [numKeys]bool
 	closed  bool
@@ -65,6 +75,15 @@ func send(v any) {
 	if err := ws.WriteJSON(v); err != nil {
 		log.Println("websocket write:", err)
 	}
+}
+
+func (p *pad) writeRaw(b []byte) {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	if p.closed {
+		return
+	}
+	p.sp.Write(b)
 }
 
 func (p *pad) write(line string) {
@@ -105,11 +124,22 @@ func main() {
 			break
 		}
 		var ev struct {
-			Event  string `json:"event"`
-			Device string `json:"device"`
+			Event      string  `json:"event"`
+			Device     string  `json:"device"`
+			Controller *string `json:"controller"`
+			Position   *int    `json:"position"`
+			Image      *string `json:"image"`
 		}
 		json.Unmarshal(msg, &ev)
 		switch ev.Event {
+		case "setImage":
+			if ev.Position != nil && (ev.Controller == nil || *ev.Controller == "Keypad") {
+				img := ""
+				if ev.Image != nil {
+					img = *ev.Image
+				}
+				queuePicture(ev.Device, *ev.Position, img)
+			}
 		case "orvoPadStatusRequest":
 			padsMu.Lock()
 			for _, p := range pads {
@@ -198,10 +228,16 @@ func tryOpen(portName, serialNo string) {
 	deadline := time.Now().Add(2 * time.Second)
 	ok := false
 	fw := ""
+	box := 0
 	for time.Now().Before(deadline) {
 		line, _ := rd.ReadString('\n')
 		if f := strings.Fields(strings.TrimSpace(line)); len(f) >= 2 && f[0] == "NINEDECK" {
 			fw = f[1]
+			for i := 2; i+1 < len(f); i++ {
+				if f[i] == "BOX" {
+					box, _ = strconv.Atoi(f[i+1])
+				}
+			}
 			ok = true
 			break
 		}
@@ -215,13 +251,18 @@ func tryOpen(portName, serialNo string) {
 	if serialNo == "" {
 		serialNo = strings.ReplaceAll(portName, "\\", "")
 	}
-	p := &pad{id: namespace + "-" + serialNo, port: portName, sp: sp, fw: fw}
+	p := &pad{id: namespace + "-" + serialNo, port: portName, sp: sp, fw: fw, box: box, pending: map[int][]byte{}}
 	padsMu.Lock()
 	pads[portName] = p
 	padsMu.Unlock()
 
 	migrateLayout(p.id)
-	p.write("H 0") // OpenDeck handles the keys now, stop the F13-F23 presses
+	p.write("H 0")
+	if p.box > 0 {
+		p.pageSet = pageLabel(p.id)
+		p.write("P " + p.pageSet)
+		p.write("F")
+	} // OpenDeck handles the keys now, so the F13-F23 presses are off
 	send(map[string]any{
 		"event": "registerDevice",
 		"payload": map[string]any{
@@ -403,6 +444,9 @@ func labelLoop() {
 		padsMu.Unlock()
 
 		for _, p := range list {
+			if p.box > 0 {
+				continue // this pad shows the app's pictures instead
+			}
 			prof := readProfile(p.id)
 			for k := 1; k <= numKeys; k++ {
 				pos := keyToPos(k)
@@ -595,7 +639,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.2"
+const latestFirmware = "0.3"
 
 var (
 	updMu    sync.Mutex
@@ -722,4 +766,130 @@ func findUF2Drive() string {
 		}
 	}
 	return ""
+}
+
+// ---------- pictures: the pad shows exactly what the app's boxes show ----------
+
+func padByID(device string) *pad {
+	padsMu.Lock()
+	defer padsMu.Unlock()
+	for _, p := range pads {
+		if p.id == device {
+			return p
+		}
+	}
+	return nil
+}
+
+// queuePicture converts the app's rendered box (a data URL) for the pad and sends it a moment
+// later together with any other boxes that change at the same time, so a page change shows at once.
+func queuePicture(device string, pos int, dataURL string) {
+	p := padByID(device)
+	if p == nil || p.box == 0 || pos < 0 || pos > 8 {
+		if p != nil && p.box == 0 {
+			kickLabels()
+		}
+		return
+	}
+	var pix []byte
+	if dataURL != "" {
+		pix = toRGB565(dataURL, p.box)
+	}
+	p.pmu.Lock()
+	p.pending[pos] = pix
+	if p.timer == nil {
+		p.timer = time.AfterFunc(25*time.Millisecond, func() { flushPictures(p) })
+	}
+	p.pmu.Unlock()
+}
+
+func flushPictures(p *pad) {
+	p.pmu.Lock()
+	pending := p.pending
+	p.pending = map[int][]byte{}
+	p.timer = nil
+	p.pmu.Unlock()
+
+	for pos := 0; pos < 9; pos++ {
+		pix, ok := pending[pos]
+		if !ok {
+			continue
+		}
+		if pix == nil {
+			p.write(fmt.Sprintf("E%d", pos+1))
+			continue
+		}
+		var b bytes.Buffer
+		fmt.Fprintf(&b, "I%d %d %d\n", pos+1, p.box, p.box)
+		b.Write(pix)
+		p.writeRaw(b.Bytes())
+	}
+	if name := pageLabel(p.id); name != p.pageSet {
+		p.pageSet = name
+		p.write("P " + name)
+	}
+	p.write("F")
+}
+
+// pageLabel is the page's name for the pad's side panel, e.g. "Streaming".
+func pageLabel(device string) string {
+	name := selectedProfile(device)
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return cleanLabel(name)
+}
+
+func kickLabels() {
+	select {
+	case kick <- struct{}{}:
+	default:
+	}
+}
+
+// toRGB565 decodes a data URL picture and scales it to size x size (area average),
+// returning little-endian RGB565 pixels.
+func toRGB565(dataURL string, size int) []byte {
+	comma := strings.IndexByte(dataURL, ',')
+	if comma < 0 {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(dataURL[comma+1:])
+	if err != nil {
+		return nil
+	}
+	src, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil
+	}
+	sb := src.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+	out := make([]byte, size*size*2)
+	for y := 0; y < size; y++ {
+		y0, y1 := y*sh/size, (y+1)*sh/size
+		if y1 <= y0 {
+			y1 = y0 + 1
+		}
+		for x := 0; x < size; x++ {
+			x0, x1 := x*sw/size, (x+1)*sw/size
+			if x1 <= x0 {
+				x1 = x0 + 1
+			}
+			var r, g, bl, n uint32
+			for yy := y0; yy < y1; yy++ {
+				for xx := x0; xx < x1; xx++ {
+					cr, cg, cb, _ := src.At(sb.Min.X+xx, sb.Min.Y+yy).RGBA()
+					r += cr >> 8
+					g += cg >> 8
+					bl += cb >> 8
+					n++
+				}
+			}
+			r, g, bl = r/n, g/n, bl/n
+			c := uint16((r>>3)<<11 | (g>>2)<<5 | bl>>3)
+			out[(y*size+x)*2] = byte(c)
+			out[(y*size+x)*2+1] = byte(c >> 8)
+		}
+	}
+	return out
 }
