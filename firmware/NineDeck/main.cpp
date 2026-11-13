@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.5 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// NineDeck test-jig firmware v0.6 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -16,6 +16,9 @@
 //                   "F"                   -> show everything sent so far, all at once
 //                   "A <dir>"             -> the next "F" slides the 3x3 in (1 = from the right, -1 = from the left)
 //                   "V <ms>"              -> slide duration (0 = no slide)
+//                   "N1 <text>"           -> name of what the slider controls (shown while moving it)
+//   device -> PC :  "S1 <0-1000>"         -> slider position (only when it moves)
+// Slider: linear pot, ends on 3V3 and GND, wiper on GP26 (ADC0).
 //                   "L<n> <text>"         -> (old) text label, drawn as a picture
 //                   "B"                   -> restart into the USB update drive (RPI-RP2)
 //                   "H 0" / "H 1"         -> F13-F23 keyboard presses off / on
@@ -29,7 +32,7 @@
 #include <Keyboard.h>
 #include <tusb.h>
 
-#define FW_VERSION "0.5"
+#define FW_VERSION "0.6"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -72,6 +75,14 @@ char pageName[40] = "";
 uint16_t oldGrid[GRID_W * SH];
 int slideDir = 0;          // set by "A", used by the next "F"
 int slideMs = 180;         // set by "V"
+
+// slider (GP26)
+#define PIN_SLIDER 26
+float sliderAvg = -1;      // smoothed reading, 0..4095
+int sliderSent = -1;       // last value sent to the PC, 0..1000
+uint32_t sliderMovedAt = 0;
+bool sliderShown = false;
+char sliderName[24] = "Slider";
 uint16_t colBuf[SH];       // one screen column on its way to the display
 
 bool state[11];
@@ -131,6 +142,26 @@ void composePanel() {
     frame.fillRoundRect(x, y, PKW, PKH, RADIUS, p ? C_ORANGE : C_KEY);
     frame.drawRoundRect(x, y, PKW, PKH, RADIUS, p ? C_TEXT : C_EDGE);
     drawArrow(x, y, k == 0, p ? C_BG : C_TEXT);
+  }
+  if (sliderShown) {                   // slider feedback instead of the page name
+    int pct = (sliderSent + 5) / 10;
+    frame.setTextColor(C_DIM);
+    frame.setTextSize(1);
+    int16_t x1, y1; uint16_t w, h;
+    frame.getTextBounds(sliderName, 0, 0, &x1, &y1, &w, &h);
+    frame.setCursor(PX + (PW - (int)w) / 2, GY + PKH + 14);
+    frame.print(sliderName);
+    char num[6];
+    snprintf(num, sizeof num, "%d%%", pct);
+    frame.setTextColor(C_TEXT);
+    frame.setTextSize(4);
+    frame.getTextBounds(num, 0, 0, &x1, &y1, &w, &h);
+    frame.setCursor(PX + (PW - (int)w) / 2, GY + PKH + 32);
+    frame.print(num);
+    int bx = PX + 8, bw = PW - 16, by = SH - 26;
+    frame.fillRoundRect(bx, by, bw, 10, 5, C_KEY);
+    frame.fillRoundRect(bx, by, max(10, bw * pct / 100), 10, 5, C_ACCENT);
+    return;
   }
   // page name, wrapped onto up to 3 lines
   frame.setTextColor(C_TEXT);
@@ -258,6 +289,7 @@ void setup() {
   uint8_t rate = 0x01;              // FRCTRL2: ~111 Hz refresh instead of 60 Hz
   tft.sendCommand(0xC6, &rate, 1);
 
+  analogReadResolution(12);
   Serial.begin(115200);
   Serial.setTimeout(500);
   Keyboard.begin();
@@ -320,6 +352,9 @@ void handleSerial() {
     } else if (buf[0] == 'A') {                       // next page change slides in
       slideDir = atoi(buf + 1) < 0 ? -1 : 1;
       snapshotGrid();
+    } else if (buf[0] == 'N' && buf[1] == '1') {
+      strncpy(sliderName, buf[2] == ' ' ? buf + 3 : buf + 2, sizeof sliderName - 1);
+      sliderName[sizeof sliderName - 1] = 0;
     } else if (buf[0] == 'V') {
       slideMs = constrain(atoi(buf + 1), 0, 1000);
     } else if (buf[0] == 'F') {
@@ -371,9 +406,40 @@ void watchHost(uint32_t now) {
   }
 }
 
+// Reads the slider every 4 ms, smooths it, and reports changes of more than ~0.4 %.
+void readSlider(uint32_t now) {
+  static uint32_t last = 0, drawnAt = 0;
+  if (now - last < 4) return;
+  last = now;
+  int raw = analogRead(PIN_SLIDER);
+  sliderAvg = sliderAvg < 0 ? raw : sliderAvg * 0.85f + raw * 0.15f;
+  // small dead zones at both ends so 0 % and 100 % are easy to reach
+  int v = constrain((int)((sliderAvg - 40) * 1000.0f / (4095 - 80) + 0.5f), 0, 1000);
+  if (sliderSent < 0 || abs(v - sliderSent) >= 4 || ((v == 0 || v == 1000) && v != sliderSent)) {
+    bool first = sliderSent < 0;
+    sliderSent = v;
+    Serial.print("S1 "); Serial.println(v);
+    if (!first) {
+      sliderMovedAt = now;
+      sliderShown = true;
+    }
+  }
+  // feedback on the screen while moving (at most every 30 ms), then back to the page name
+  if (sliderShown && now - drawnAt > 30 && now - sliderMovedAt < 40) {
+    drawnAt = now;
+    composePanel();
+    push(PX, 0, SW - PX, SH);
+  } else if (sliderShown && now - sliderMovedAt > 1200) {
+    sliderShown = false;
+    composePanel();
+    push(PX, 0, SW - PX, SH);
+  }
+}
+
 void loop() {
   uint32_t now = millis();
   watchHost(now);
+  readSlider(now);
   for (int i = 0; i < 11; i++) {
     bool p = digitalRead(KEY_PINS[i]) == LOW;
     if (p != state[i] && now - changedAt[i] > 8) {     // 8 ms debounce

@@ -2,7 +2,7 @@
 	"Name": "NineDeck",
 	"Description": "Device support for the NineDeck macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.3.2",
+	"Version": "0.3.3",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",
@@ -20,7 +20,57 @@
 			"MinimumVersion": "11"
 		}
 	],
-	"Actions": [],
+	"Actions": [
+		{
+			"Name": "Master volume",
+			"UUID": "com.ninedeck.device.mastervolume",
+			"Icon": "assets/icon",
+			"Tooltip": "Slider sets the Windows volume",
+			"Controllers": [
+				"Encoder"
+			],
+			"States": [
+				{
+					"Image": "assets/icon",
+					"Title": "Master volume"
+				}
+			],
+			"SupportedInMultiActions": false
+		},
+		{
+			"Name": "App volume",
+			"UUID": "com.ninedeck.device.appvolume",
+			"Icon": "assets/icon",
+			"Tooltip": "Slider sets one app's volume (e.g. Discord)",
+			"Controllers": [
+				"Encoder"
+			],
+			"States": [
+				{
+					"Image": "assets/icon",
+					"Title": "App volume"
+				}
+			],
+			"SupportedInMultiActions": false,
+			"PropertyInspectorPath": "assets/pi/appvolume.html"
+		},
+		{
+			"Name": "Mic level",
+			"UUID": "com.ninedeck.device.miclevel",
+			"Icon": "assets/icon",
+			"Tooltip": "Slider sets your microphone level",
+			"Controllers": [
+				"Encoder"
+			],
+			"States": [
+				{
+					"Image": "assets/icon",
+					"Title": "Mic level"
+				}
+			],
+			"SupportedInMultiActions": false
+		}
+	],
 	"DeviceNamespace": "nd",
 	"SDKVersion": 2,
 	"Software": {

@@ -128,6 +128,7 @@ func main() {
 			log.Println("OpenDeck connection closed:", err)
 			break
 		}
+		handleActionEvent(msg)
 		var ev struct {
 			Event      string  `json:"event"`
 			Device     string  `json:"device"`
@@ -287,7 +288,7 @@ func tryOpen(portName, serialNo string) {
 	send(map[string]any{
 		"event": "registerDevice",
 		"payload": map[string]any{
-			"id": p.id, "name": "NineDeck", "rows": rows, "columns": cols, "encoders": 0, "type": 0,
+			"id": p.id, "name": "NineDeck", "rows": rows, "columns": cols, "encoders": sliderCount(p), "type": 0,
 		},
 	})
 	log.Println("registered", p.id, "on", portName, "firmware", fw)
@@ -315,6 +316,13 @@ func reader(p *pad, rd *bufio.Reader) {
 			break
 		}
 		line = strings.TrimSpace(line)
+		// "S1 <0-1000>": the slider moved
+		if strings.HasPrefix(line, "S1 ") {
+			if v, err := strconv.Atoi(strings.TrimSpace(line[3:])); err == nil {
+				sliderMoved(p, v)
+			}
+			continue
+		}
 		// "K<n> 1" / "K<n> 0"
 		if len(line) >= 4 && line[0] == 'K' {
 			parts := strings.Fields(line[1:])
@@ -794,7 +802,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.5"
+const latestFirmware = "0.6"
 
 var (
 	updMu    sync.Mutex
