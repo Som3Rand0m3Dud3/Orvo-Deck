@@ -52,8 +52,8 @@
 		if (devices[value]) {
 			const effectiveCols = Math.min(Math.max(devices[value].columns, devices[value].encoders, devices[value].touchpoints), 8);
 			const effectiveRows = Math.min(devices[value].rows + Math.min(devices[value].encoders, 1) + Math.min(devices[value].touchpoints, 1), 4);
-			const idealWidth = effectiveCols * 132 + 416;
-			const idealHeight = effectiveRows * 132 + 384 + (buildInfo?.split("</summary>")[0]?.includes("darwin") ? 28 : 0);
+			const idealWidth = effectiveCols * 132 + 1040;
+			const idealHeight = Math.max(effectiveRows * 132 + 384, 820) + (buildInfo?.split("</summary>")[0]?.includes("darwin") ? 28 : 0);
 			(async () => {
 				const width = Math.min(idealWidth, screen.availWidth);
 				const height = Math.min(idealHeight, screen.availHeight);
@@ -73,7 +73,7 @@
 
 {#if Object.keys(devices).length > 0}
 	<div class="select-device-wrapper">
-		<span bind:this={measure} class="invisible fixed whitespace-pre pointer-events-none text-xl font-semibold" aria-hidden="true"></span>
+		<span bind:this={measure} class="invisible fixed whitespace-pre pointer-events-none text-base font-semibold" aria-hidden="true"></span>
 		<select bind:value style:width="{selectWidth}px" aria-label={$t("device_selector.device")}>
 			<option value="" disabled selected>{$t("device_selector.choose_device")}</option>
 

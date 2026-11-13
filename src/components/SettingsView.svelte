@@ -48,6 +48,15 @@
 	}
 
 	let showPopup: boolean;
+
+	let theme = document.documentElement.dataset.theme == "light" ? "light" : "dark";
+	function setTheme(value: "dark" | "light") {
+		theme = value;
+		document.documentElement.dataset.theme = value;
+		try {
+			localStorage.setItem("orvo-theme", value);
+		} catch {}
+	}
 	let buildInfo: string;
 	(async () => (buildInfo = await invoke("get_build_info")))();
 
@@ -99,6 +108,14 @@
 		<button class="mr-2 my-1 float-right text-xl text-neutral-300" on:click={() => (showPopup = false)} aria-label={$t("settings.close")}>✕</button>
 		<h2 class="m-2 font-semibold text-xl text-neutral-300">{$t("settings.button")}</h2>
 	</svelte:fragment>
+
+	<div class="flex flex-row items-center mx-2 mb-3 space-x-3">
+		<span class="text-neutral-400">Appearance:</span>
+		<div role="group" aria-label="Appearance" class="flex gap-1 p-1 rounded-xl bg-neutral-700">
+			<button class="px-4 h-9 rounded-lg text-sm" class:bg-neutral-900={theme == "dark"} class:text-neutral-100={theme == "dark"} on:click={() => setTheme("dark")}>Dark</button>
+			<button class="px-4 h-9 rounded-lg text-sm" class:bg-neutral-900={theme == "light"} class:text-neutral-100={theme == "light"} on:click={() => setTheme("light")}>Light</button>
+		</div>
+	</div>
 
 	{#if $settings}
 		<div class="flex flex-row items-center mx-2 mb-2 space-x-2">

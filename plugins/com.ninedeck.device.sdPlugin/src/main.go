@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"io/fs"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,22 +26,16 @@ import (
 const (
 	namespace = "nd"
 	rows      = 3
-	cols      = 4
+	cols      = 3
 	numKeys   = 11
 	labelMax  = 11
 )
 
-// pad key number (1..11) -> OpenDeck position in a 3 row x 4 column grid.
-// Keys 1-9 fill the left 3 columns, page keys sit in the right column.
+// pad key number (1..11) -> OpenDeck position in a 3x3 grid.
+// Keys 1-9 are the grid; 10 and 11 are the page keys, handled here (they flip pages), so -1.
 func keyToPos(k int) int {
-	switch {
-	case k >= 1 && k <= 9:
-		r, c := (k-1)/3, (k-1)%3
-		return r*cols + c
-	case k == 10:
-		return 3
-	case k == 11:
-		return 7
+	if k >= 1 && k <= 9 {
+		return k - 1
 	}
 	return -1
 }
@@ -210,6 +206,7 @@ func tryOpen(portName, serialNo string) {
 	pads[portName] = p
 	padsMu.Unlock()
 
+	migrateLayout(p.id)
 	p.write("H 0") // OpenDeck handles the keys now, stop the F13-F23 presses
 	send(map[string]any{
 		"event": "registerDevice",
@@ -240,6 +237,10 @@ func reader(p *pad, rd *bufio.Reader) {
 				continue
 			}
 			k, _ := strconv.Atoi(parts[0])
+			if (k == 10 || k == 11) && parts[1] == "1" {
+				flipPage(p.id, map[int]int{10: -1, 11: 1}[k])
+				continue
+			}
 			pos := keyToPos(k)
 			if pos < 0 {
 				continue
@@ -286,6 +287,9 @@ func configDir() string {
 		return d
 	}
 	if a := os.Getenv("APPDATA"); a != "" {
+		if d := filepath.Join(a, "com.orvo.studio"); fileExists(d) {
+			return d
+		}
 		return filepath.Join(a, "opendeck")
 	}
 	h, _ := os.UserHomeDir()
@@ -380,12 +384,12 @@ func labelLoop() {
 			for k := 1; k <= numKeys; k++ {
 				pos := keyToPos(k)
 				lbl := ""
-				if prof != nil && pos < len(prof.Keys) {
+				if pos >= 0 && prof != nil && pos < len(prof.Keys) {
 					lbl = labelFor(prof.Keys[pos])
 				}
-				if lbl == "" && k == 10 {
+				if k == 10 {
 					lbl = "<"
-				} else if lbl == "" && k == 11 {
+				} else if k == 11 {
 					lbl = ">"
 				}
 				if !p.sent[k-1] || p.labels[k-1] != lbl {
@@ -395,6 +399,104 @@ func labelLoop() {
 					time.Sleep(15 * time.Millisecond)
 				}
 			}
+		}
+	}
+}
+
+// ---------- pages (OpenDeck profiles) ----------
+
+// listPages returns the device's profiles ("Name" or "Folder/Name"), sorted the same way as the app.
+func listPages(device string) []string {
+	root := filepath.Join(configDir(), "profiles", device)
+	var out []string
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		out = append(out, strings.TrimSuffix(filepath.ToSlash(rel), ".json"))
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
+	return out
+}
+
+func flipPage(device string, step int) {
+	pages := listPages(device)
+	if len(pages) < 2 {
+		return
+	}
+	cur := selectedProfile(device)
+	i := 0
+	for n, p := range pages {
+		if p == cur {
+			i = n
+		}
+	}
+	next := pages[(i+step+len(pages))%len(pages)]
+	send(map[string]any{"event": "switchProfile", "device": device, "profile": next})
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+	}()
+}
+
+// migrateLayout moves profiles saved with the old 3x4 layout (page keys in a 4th column)
+// to the 3x3 layout, so keys 4-9 keep their actions.
+func migrateLayout(device string) {
+	root := filepath.Join(configDir(), "profiles", device)
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var prof map[string]any
+		if json.Unmarshal(b, &prof) != nil {
+			return nil
+		}
+		keys, ok := prof["keys"].([]any)
+		if !ok || len(keys) != 12 {
+			return nil
+		}
+		nk := make([]any, 9)
+		for r := 0; r < 3; r++ {
+			for c := 0; c < 3; c++ {
+				oldPos, newPos := r*4+c, r*3+c
+				inst := keys[oldPos]
+				renumber(inst, oldPos, newPos)
+				nk[newPos] = inst
+			}
+		}
+		prof["keys"] = nk
+		if out, err := json.Marshal(prof); err == nil {
+			os.WriteFile(path+".bak-3x4", b, 0o644)
+			os.WriteFile(path, out, 0o644)
+			log.Println("migrated", path, "to 3x3")
+		}
+		return nil
+	})
+}
+
+// renumber rewrites "<device>.<profile>.Keypad.<old>.<n>" contexts inside an instance.
+func renumber(v any, oldPos, newPos int) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			if s, ok := x.(string); ok && k == "context" {
+				t[k] = strings.Replace(s, fmt.Sprintf(".Keypad.%d.", oldPos), fmt.Sprintf(".Keypad.%d.", newPos), 1)
+			} else {
+				renumber(x, oldPos, newPos)
+			}
+		}
+	case []any:
+		for _, x := range t {
+			renumber(x, oldPos, newPos)
 		}
 	}
 }

@@ -152,6 +152,10 @@
 	}
 
 	let showPopup: boolean = false;
+	export function openManager() {
+		showPopup = true;
+	}
+	export let showSelect = true;
 	let nameInput: HTMLInputElement;
 
 	let showApplicationManager: boolean = false;
@@ -189,6 +193,7 @@
 	}
 </script>
 
+{#if showSelect}
 <div class="select-profile-wrapper">
 	<span bind:this={measure} class="invisible fixed whitespace-pre pointer-events-none" aria-hidden="true"></span>
 	<select bind:value style:width="{selectWidth}px" aria-label={$t("profile_manager.label")}>
@@ -208,6 +213,7 @@
 		<option value="opendeck_edit_profiles">{$t("profile_manager.edit")}</option>
 	</select>
 </div>
+{/if}
 
 <svelte:window
 	on:keydown={(event) => {

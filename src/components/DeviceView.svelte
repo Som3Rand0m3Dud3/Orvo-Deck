@@ -9,6 +9,7 @@
 
 	import { t } from "$lib/i18n";
 	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
+	import { profileManager } from "$lib/singletons";
 
 	import { invoke } from "@tauri-apps/api/core";
 
@@ -73,6 +74,23 @@
 			array[destination.position] = response;
 			profile = profile;
 		}
+	}
+
+	// Page bar under the pad: the same ◀ ▶ the pad's page keys use.
+	let pages: string[] = [];
+	async function loadPages(_id: string) {
+		try {
+			pages = ((await invoke("get_profiles", { device: device.id })) as string[]).sort((a, b) => a.localeCompare(b));
+		} catch {
+			pages = [];
+		}
+	}
+	$: loadPages(profile.id);
+	$: pageIndex = Math.max(0, pages.indexOf(profile.id));
+	const pageName = (id: string) => (id?.includes("/") ? id.split("/")[1] : id);
+	function flip(step: number) {
+		if (pages.length < 2) return;
+		$profileManager?.setProfile(pages[(pageIndex + step + pages.length) % pages.length]);
 	}
 
 	$: overflowsX = Math.max(device.columns, device.encoders, device.touchpoints) > 8;
@@ -162,7 +180,7 @@
 {#key device}
 	<span id="grid-description" class="sr-only">{$t("device_view.grid_description")}</span>
 	<div
-		class="flex flex-col justify-center grow px-16 py-6 overflow-auto"
+		class="flex flex-col justify-center grow px-10 py-6 overflow-auto"
 		class:items-center={device.columns <= 9}
 		class:hidden={$inspectedParentAction || selectedDevice != device.id}
 		class:device-fade-x={overflowsX && !overflowsY}
@@ -177,6 +195,11 @@
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}
 	>
+		<div class="flex items-baseline gap-3 mb-5 flex-wrap" style={`max-width: ${Math.max(keypadRowWidth, 440) + 48}px; width: 100%`}>
+			<h1 class="m-0 text-2xl font-bold tracking-tight text-neutral-100">{pageName(profile.id)}</h1>
+			<span class="text-sm text-neutral-400">Page {pageIndex + 1} of {Math.max(pages.length, 1)} · click a box to edit it</span>
+		</div>
+		<div class="p-5 rounded-3xl bg-neutral-900 border border-neutral-700" style="box-shadow: var(--orvo-shadow)">
 		<div class="flex flex-col" role="rowgroup">
 			{#each { length: device.rows } as _, r}
 				<div class="flex flex-row" role="row">
@@ -247,6 +270,23 @@
 				/>
 			{/each}
 		</div>
+		</div>
+
+		{#if pages.length > 0}
+			<div class="flex items-center justify-center gap-3 mt-5" role="group" aria-label="Page keys">
+				<button
+					class="flex items-center justify-center w-14 h-12 rounded-xl bg-neutral-900 border border-neutral-700 text-neutral-200 hover:border-blue-500 transition-colors"
+					aria-label="Previous page"
+					on:click|stopPropagation={() => flip(-1)}>◀</button
+				>
+				<span class="min-w-40 text-center text-sm text-neutral-300"><span class="font-semibold text-neutral-100">{pageName(profile.id)}</span> · {pageIndex + 1}/{pages.length}</span>
+				<button
+					class="flex items-center justify-center w-14 h-12 rounded-xl bg-neutral-900 border border-neutral-700 text-neutral-200 hover:border-blue-500 transition-colors"
+					aria-label="Next page"
+					on:click|stopPropagation={() => flip(1)}>▶</button
+				>
+			</div>
+		{/if}
 	</div>
 {/key}
 
