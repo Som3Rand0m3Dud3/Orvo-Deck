@@ -2,9 +2,10 @@ name: "windows-build"
 
 # Windows build of Orvo Studio.
 # - Every push to main: test build, installer in the run's "Artifacts" section.
-# - Pushing a tag like v0.2.0: also publishes a GitHub Release with the installer,
-#   which the in-app "Check for updates" / version picker uses.
-#   (The tag must match the version in src-tauri/Cargo.toml.)
+#   It is also published as a GitHub *pre-release* "v<version>" (marked as a test build),
+#   so Orvo Studio's update button can install it when "Show test versions" is on.
+#   Bump the version in src-tauri/Cargo.toml for each test build.
+# - Pushing a tag like v1.0.0: publishes a normal (non-test) GitHub Release.
 on:
   push:
     branches:
@@ -65,6 +66,25 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+      - name: read app version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          "APP_VERSION=$v" >> $env:GITHUB_ENV
+
+      - name: publish test version (pre-release)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: Orvo Studio v${{ env.APP_VERSION }} (test)
+          prerelease: true
+          body: Test build of Orvo Studio. Not an official release.
+          files: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
 
       - name: publish release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')

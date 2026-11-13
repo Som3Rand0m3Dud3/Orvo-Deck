@@ -11,6 +11,7 @@
 	import DeviceSelector from "../components/DeviceSelector.svelte";
 	import DeviceView from "../components/DeviceView.svelte";
 	import NoDevicesDetected from "../components/NoDevicesDetected.svelte";
+	import PadFirmware from "../components/PadFirmware.svelte";
 	import PagesNav from "../components/PagesNav.svelte";
 	import ParentActionView from "../components/ParentActionView.svelte";
 	import PluginManager from "../components/PluginManager.svelte";
@@ -24,6 +25,9 @@
 
 	initPortBase();
 
+	// Remember the pad even while it briefly disconnects (e.g. during a firmware update).
+	let lastDevice = "";
+	$: if (selectedDevice) lastDevice = selectedDevice;
 	$: hasDevice = Object.keys(devices).length > 0 && selectedDevice && devices[selectedDevice];
 </script>
 
@@ -68,6 +72,7 @@
 			</div>
 			<p class="orvo-label px-5 pt-2 pb-2 border-t border-neutral-700">Actions</p>
 			<ActionList bind:this={$actionList} />
+			{#if lastDevice}<PadFirmware device={lastDevice} />{/if}
 		</aside>
 
 		<main class="relative flex flex-col grow min-w-0">

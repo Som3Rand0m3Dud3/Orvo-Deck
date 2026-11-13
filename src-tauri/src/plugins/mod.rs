@@ -419,8 +419,10 @@ pub fn initialise_plugins() {
 				let existing_path = plugin_dir.join(entry.file_name());
 				if (|| -> Result<(), anyhow::Error> {
 					let existing_version = semver::Version::parse(&serde_json::from_slice::<manifest::PluginManifest>(&fs::read(existing_path.join("manifest.json"))?)?.version)?;
-					if existing_version < builtin_version {
-						Err(anyhow::anyhow!("builtin version is newer than existing version"))
+					// Orvo: built-in plugins always match the app, so replace them on any version change
+					// (this also restores the right plugin when rolling back to an older app version).
+					if existing_version != builtin_version {
+						Err(anyhow::anyhow!("builtin version differs from existing version"))
 					} else {
 						Ok(())
 					}

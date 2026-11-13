@@ -45,6 +45,7 @@ type pad struct {
 	port    string
 	sp      serial.Port
 	wmu     sync.Mutex
+	fw      string // firmware version the pad reports, e.g. "0.2"
 	labels  [numKeys]string
 	sent    [numKeys]bool
 	closed  bool
@@ -104,9 +105,20 @@ func main() {
 			break
 		}
 		var ev struct {
-			Event string `json:"event"`
+			Event  string `json:"event"`
+			Device string `json:"device"`
 		}
 		json.Unmarshal(msg, &ev)
+		switch ev.Event {
+		case "orvoPadStatusRequest":
+			padsMu.Lock()
+			for _, p := range pads {
+				sendStatus(p.id, p.fw, "ready", "")
+			}
+			padsMu.Unlock()
+		case "orvoUpdateFirmware":
+			go updateFirmware(ev.Device)
+		}
 		if ev.Event == "setImage" || ev.Event == "deviceDidConnect" {
 			// a key changed in OpenDeck: refresh labels (profile file is written shortly after)
 			go func() {
@@ -185,9 +197,11 @@ func tryOpen(portName, serialNo string) {
 	rd := bufio.NewReader(sp)
 	deadline := time.Now().Add(2 * time.Second)
 	ok := false
+	fw := ""
 	for time.Now().Before(deadline) {
 		line, _ := rd.ReadString('\n')
-		if strings.HasPrefix(strings.TrimSpace(line), "NINEDECK") {
+		if f := strings.Fields(strings.TrimSpace(line)); len(f) >= 2 && f[0] == "NINEDECK" {
+			fw = f[1]
 			ok = true
 			break
 		}
@@ -201,7 +215,7 @@ func tryOpen(portName, serialNo string) {
 	if serialNo == "" {
 		serialNo = strings.ReplaceAll(portName, "\\", "")
 	}
-	p := &pad{id: namespace + "-" + serialNo, port: portName, sp: sp}
+	p := &pad{id: namespace + "-" + serialNo, port: portName, sp: sp, fw: fw}
 	padsMu.Lock()
 	pads[portName] = p
 	padsMu.Unlock()
@@ -214,7 +228,16 @@ func tryOpen(portName, serialNo string) {
 			"id": p.id, "name": "NineDeck", "rows": rows, "columns": cols, "encoders": 0, "type": 0,
 		},
 	})
-	log.Println("registered", p.id, "on", portName)
+	log.Println("registered", p.id, "on", portName, "firmware", fw)
+	updMu.Lock()
+	wasUpdating := updating[p.id]
+	delete(updating, p.id)
+	updMu.Unlock()
+	if wasUpdating {
+		sendStatus(p.id, fw, "done", "Pad updated to firmware v"+fw)
+	} else {
+		sendStatus(p.id, fw, "ready", "")
+	}
 	select {
 	case kick <- struct{}{}:
 	default:
@@ -567,4 +590,136 @@ func renumber(v any, oldPos, newPos int) {
 			renumber(x, oldPos, newPos)
 		}
 	}
+}
+
+// ---------- firmware updates (asked for by Orvo Studio) ----------
+
+// The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
+const latestFirmware = "0.2"
+
+var (
+	updMu    sync.Mutex
+	updating = map[string]bool{}
+)
+
+func newer(a, b string) bool { // is version a newer than b?
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var x, y int
+		if i < len(pa) {
+			x, _ = strconv.Atoi(pa[i])
+		}
+		if i < len(pb) {
+			y, _ = strconv.Atoi(pb[i])
+		}
+		if x != y {
+			return x > y
+		}
+	}
+	return false
+}
+
+func sendStatus(device, fw, state, message string) {
+	send(map[string]any{"event": "orvoPadStatus", "payload": map[string]any{
+		"device": device, "name": "NineDeck", "firmware": fw, "latest": latestFirmware,
+		"updateAvailable": fw != "" && newer(latestFirmware, fw), "state": state, "message": message,
+	}})
+}
+
+func updateFirmware(device string) {
+	fail := func(fw, msg string) {
+		updMu.Lock()
+		delete(updating, device)
+		updMu.Unlock()
+		log.Println("firmware update failed:", msg)
+		sendStatus(device, fw, "error", msg)
+	}
+	var p *pad
+	padsMu.Lock()
+	for _, x := range pads {
+		if x.id == device {
+			p = x
+		}
+	}
+	padsMu.Unlock()
+	if p == nil {
+		fail("", "The pad is not connected.")
+		return
+	}
+	image, err := os.ReadFile(filepath.Join(exeDir(), "firmware", "ninedeck-fw.uf2"))
+	if err != nil {
+		fail(p.fw, "The firmware file is missing from the plugin.")
+		return
+	}
+	updMu.Lock()
+	updating[device] = true
+	updMu.Unlock()
+	sendStatus(device, p.fw, "updating", "Restarting the pad into update mode…")
+
+	// Firmware 0.2+ understands "B"; older firmware restarts into the bootloader
+	// when its serial port is opened at 1200 baud and closed again.
+	if !newer("0.2", p.fw) {
+		p.write("B")
+		time.Sleep(300 * time.Millisecond)
+	} else {
+		p.wmu.Lock()
+		p.closed = true
+		p.sp.Close()
+		p.wmu.Unlock()
+		time.Sleep(300 * time.Millisecond)
+		if sp, err := serial.Open(p.port, &serial.Mode{BaudRate: 1200}); err == nil {
+			sp.SetDTR(false)
+			time.Sleep(100 * time.Millisecond)
+			sp.Close()
+		}
+	}
+
+	drive := ""
+	for i := 0; i < 40 && drive == ""; i++ {
+		time.Sleep(500 * time.Millisecond)
+		drive = findUF2Drive()
+	}
+	if drive == "" {
+		fail(p.fw, "The pad did not show up as an update drive. Hold BOOTSEL while plugging it in, then try again.")
+		return
+	}
+	sendStatus(device, p.fw, "updating", "Installing firmware v"+latestFirmware+"…")
+	if err := os.WriteFile(filepath.Join(drive, "NINEDECK.UF2"), image, 0o644); err != nil {
+		fail(p.fw, "Could not copy the firmware to the pad: "+err.Error())
+		return
+	}
+	sendStatus(device, p.fw, "updating", "Restarting the pad…")
+	// The pad restarts by itself; the scanner finds it again and reports "done".
+	go func() {
+		time.Sleep(30 * time.Second)
+		updMu.Lock()
+		still := updating[device]
+		updMu.Unlock()
+		if still {
+			fail(p.fw, "The pad did not come back after the update. Unplug it and plug it back in.")
+		}
+	}()
+}
+
+// findUF2Drive looks for the Raspberry Pi update drive (it holds INFO_UF2.TXT).
+func findUF2Drive() string {
+	var candidates []string
+	if os.PathSeparator == '\\' {
+		for c := 'D'; c <= 'Z'; c++ {
+			candidates = append(candidates, string(c)+":\\")
+		}
+	} else {
+		candidates = append(candidates, "/Volumes/RPI-RP2", "/Volumes/RP2350")
+		for _, pattern := range []string{"/media/*/*", "/run/media/*/*", "/mnt/*"} {
+			m, _ := filepath.Glob(pattern)
+			candidates = append(candidates, m...)
+		}
+	}
+	for _, c := range candidates {
+		b, err := os.ReadFile(filepath.Join(c, "INFO_UF2.TXT"))
+		if err == nil && (strings.Contains(string(b), "RP2") || strings.Contains(string(b), "UF2 Bootloader")) {
+			return c
+		}
+	}
+	return ""
 }

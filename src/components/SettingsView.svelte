@@ -14,17 +14,30 @@
 	import { listen } from "@tauri-apps/api/event";
 	import { ask, message } from "@tauri-apps/plugin-dialog";
 
-	type Release = { tag: string; version: string; name: string; notes: string; date: string; page: string; installer: string | null; newer: boolean; current: boolean };
+	type Release = { tag: string; version: string; name: string; notes: string; date: string; page: string; installer: string | null; newer: boolean; current: boolean; prerelease: boolean };
 	let releases: Release[] | null = null;
 	let selectedTag = "";
 	let updateState: "idle" | "checking" | "error" | "installing" = "idle";
 	$: currentVersion = buildInfo?.match(/v(\d+\.\d+\.\d+[^\s<]*)/)?.[1] ?? "";
 	$: newest = releases?.find((r) => r.newer);
 
+	let testVersions = true;
+	try {
+		const saved = localStorage.getItem("orvo-test-versions");
+		if (saved != null) testVersions = saved == "1";
+	} catch {}
+	function setTestVersions(value: boolean) {
+		testVersions = value;
+		try {
+			localStorage.setItem("orvo-test-versions", value ? "1" : "0");
+		} catch {}
+		if (releases) checkUpdates();
+	}
+
 	async function checkUpdates() {
 		updateState = "checking";
 		try {
-			releases = await invoke<Release[]>("list_releases");
+			releases = await invoke<Release[]>("list_releases", { includePrerelease: testVersions });
 			selectedTag = (releases.find((r) => r.newer) ?? releases.find((r) => r.current) ?? releases[0])?.tag ?? "";
 			updateState = "idle";
 		} catch {
@@ -204,6 +217,11 @@
 				</button>
 			</div>
 
+			<label class="flex items-center gap-2 mt-2 text-sm text-neutral-400">
+				<input type="checkbox" checked={testVersions} on:change={(e) => setTestVersions(e.currentTarget.checked)} />
+				Show test versions (builds before 1.0)
+			</label>
+
 			{#if updateState == "error"}
 				<p class="mt-2 text-sm text-red-400">{$t("settings.updates.error")}</p>
 			{:else if releases}
@@ -219,7 +237,7 @@
 							<select bind:value={selectedTag} class="w-auto pr-10!" id="settings-version">
 								{#each releases as r, i}
 									<option value={r.tag}>
-										{r.tag}{r.date ? ` (${r.date})` : ""}{i == 0 ? ` · ${$t("settings.updates.newest")}` : ""}{r.current ? ` · ${$t("settings.updates.installed")}` : ""}
+										{r.tag}{r.prerelease ? " · test" : ""}{r.date ? ` (${r.date})` : ""}{i == 0 ? ` · ${$t("settings.updates.newest")}` : ""}{r.current ? ` · ${$t("settings.updates.installed")}` : ""}
 									</option>
 								{/each}
 							</select>

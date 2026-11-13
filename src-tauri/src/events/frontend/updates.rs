@@ -23,6 +23,8 @@ pub struct Release {
 	pub installer: Option<String>,
 	pub newer: bool,
 	pub current: bool,
+	/// A test build (GitHub "pre-release"), shown only when test versions are allowed.
+	pub prerelease: bool,
 }
 
 fn installer_for_this_os(assets: &[serde_json::Value]) -> Option<String> {
@@ -37,7 +39,12 @@ fn installer_for_this_os(assets: &[serde_json::Value]) -> Option<String> {
 	}
 }
 
-pub async fn fetch_releases() -> Result<Vec<Release>, anyhow::Error> {
+/// Test versions are included when asked for, which by default is while the app itself is a 0.x test version.
+pub fn test_versions_default() -> bool {
+	semver::Version::parse(built_info::PKG_VERSION).map(|v| v.major == 0).unwrap_or(false)
+}
+
+pub async fn fetch_releases(include_prerelease: bool) -> Result<Vec<Release>, anyhow::Error> {
 	let res = reqwest::Client::new()
 		.get(format!("{RELEASES_API}?per_page=50"))
 		.header("Accept", "application/vnd.github+json")
@@ -54,6 +61,10 @@ pub async fn fetch_releases() -> Result<Vec<Release>, anyhow::Error> {
 		if r.get("draft").and_then(|v| v.as_bool()).unwrap_or(false) {
 			continue;
 		}
+		let prerelease = r.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false);
+		if prerelease && !include_prerelease {
+			continue;
+		}
 		let Some(tag) = r.get("tag_name").and_then(|v| v.as_str()) else { continue };
 		let Ok(version) = semver::Version::parse(tag.trim_start_matches('v')) else { continue };
 		let text = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
@@ -68,6 +79,7 @@ pub async fn fetch_releases() -> Result<Vec<Release>, anyhow::Error> {
 			installer: installer_for_this_os(&assets),
 			newer: version > current,
 			current: version == current,
+			prerelease,
 		});
 	}
 	releases.sort_by(|a, b| semver::Version::parse(&b.version).unwrap().cmp(&semver::Version::parse(&a.version).unwrap()));
@@ -75,8 +87,8 @@ pub async fn fetch_releases() -> Result<Vec<Release>, anyhow::Error> {
 }
 
 #[command]
-pub async fn list_releases() -> Result<Vec<Release>, Error> {
-	Ok(fetch_releases().await?)
+pub async fn list_releases(include_prerelease: Option<bool>) -> Result<Vec<Release>, Error> {
+	Ok(fetch_releases(include_prerelease.unwrap_or_else(test_versions_default)).await?)
 }
 
 /// Downloads the installer of the chosen release, starts it, and closes Orvo Studio so it can be replaced.
@@ -86,7 +98,7 @@ pub async fn install_release(app: AppHandle, tag: String) -> Result<(), Error> {
 }
 
 pub async fn install(app: &AppHandle, tag: &str) -> Result<(), anyhow::Error> {
-	let releases = fetch_releases().await?;
+	let releases = fetch_releases(true).await?;
 	let Some(release) = releases.into_iter().find(|r| r.tag == tag) else {
 		return Err(anyhow::anyhow!("Version {tag} was not found"));
 	};

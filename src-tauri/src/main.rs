@@ -108,6 +108,8 @@ async fn main() {
 			frontend::settings::restore_config_directory,
 			frontend::updates::list_releases,
 			frontend::updates::install_release,
+			frontend::pad::request_pad_status,
+			frontend::pad::update_pad_firmware,
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();
@@ -238,7 +240,7 @@ async fn main() {
 			}
 
 			async fn update() -> Result<(), anyhow::Error> {
-				let releases = frontend::updates::fetch_releases().await?;
+				let releases = frontend::updates::fetch_releases(frontend::updates::test_versions_default()).await?;
 				let Some(latest) = releases.into_iter().find(|r| r.newer) else { return Ok(()) };
 				let app = APP_HANDLE.get().unwrap();
 				let tag = latest.tag.clone();

@@ -54,6 +54,11 @@ impl GenericInstancePayload {
 	}
 }
 
+/// Orvo: send a raw message to one plugin (used for pad firmware updates).
+pub async fn orvo_send_to_plugin(plugin: &str, data: &impl Serialize) -> Result<(), anyhow::Error> {
+	send_to_plugin(plugin, data).await
+}
+
 async fn send_to_plugin(plugin: &str, data: &impl Serialize) -> Result<(), anyhow::Error> {
 	let message = tokio_tungstenite::tungstenite::Message::Text(serde_json::to_string(data)?.into());
 	let mut sockets = super::PLUGIN_SOCKETS.lock().await;
