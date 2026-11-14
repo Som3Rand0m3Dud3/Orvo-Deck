@@ -26,3 +26,6 @@ globalThis.addEventListener("blur", () => openContextMenu.set(null));
 
 export type CopiedItem = { type: "instance"; source: Context } | { type: "action"; action: Action };
 export const copiedItem: Writable<CopiedItem | null> = writable(null);
+
+// Orvo: the action tray asks the device view to put an action on the selected empty box.
+export const placeAction: Writable<{ context: Context; action: Action } | null> = writable(null);

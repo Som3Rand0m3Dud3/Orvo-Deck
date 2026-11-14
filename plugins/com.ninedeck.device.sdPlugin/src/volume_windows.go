@@ -8,6 +8,7 @@ package main
 // newest level is applied.
 
 import (
+	"fmt"
 	"log"
 	"path/filepath"
 	"runtime"
@@ -31,9 +32,12 @@ const (
 type volReq struct {
 	kind  int
 	app   string
+	dev   string // chosen speakers / mic (endpoint ID); "" = the Windows default
 	level float32
 	get   chan float32 // set: read the level instead of setting it
 	list  chan []string
+	devs  chan []audioDev // set: list the speakers (mic == false) or microphones
+	mic   bool
 }
 
 var (
@@ -46,10 +50,10 @@ var (
 
 func startVol() { volOnce.Do(func() { go volWorker() }) }
 
-func setVolume(kind int, app string, level float32) {
+func setVolume(kind int, app, dev string, level float32) {
 	startVol()
 	volMu.Lock()
-	volNext = &volReq{kind: kind, app: app, level: level}
+	volNext = &volReq{kind: kind, app: app, dev: dev, level: level}
 	volMu.Unlock()
 	select {
 	case volWake <- struct{}{}:
@@ -58,9 +62,9 @@ func setVolume(kind int, app string, level float32) {
 }
 
 // getVolume reads a level (0..1); ok is false if it could not be read.
-func getVolume(kind int, app string) (float32, bool) {
+func getVolume(kind int, app, dev string) (float32, bool) {
 	startVol()
-	r := &volReq{kind: kind, app: app, get: make(chan float32, 1)}
+	r := &volReq{kind: kind, app: app, dev: dev, get: make(chan float32, 1)}
 	volCall <- r
 	select {
 	case v := <-r.get:
@@ -83,13 +87,29 @@ func listApps() []string {
 	}
 }
 
-type endpoint struct {
-	dev *wca.IMMDevice
-	aev *wca.IAudioEndpointVolume
+// listAudioDevices returns the speakers (mic == false) or microphones that are plugged in and on.
+func listAudioDevices(mic bool) []audioDev {
+	startVol()
+	r := &volReq{devs: make(chan []audioDev, 1), mic: mic}
+	volCall <- r
+	select {
+	case l := <-r.devs:
+		return l
+	case <-time.After(800 * time.Millisecond):
+		return nil
+	}
 }
 
+type endpoint struct {
+	flow uint32
+	dev  *wca.IMMDevice
+	aev  *wca.IAudioEndpointVolume
+}
+
+func epKey(flow uint32, dev string) string { return fmt.Sprintf("%d|%s", flow, dev) }
+
 var (
-	endpoints = map[uint32]*endpoint{} // flow (render / capture) -> opened volume control
+	endpoints = map[string]*endpoint{} // flow (render / capture) + chosen device -> opened volume control
 	sessions  []*session                // app sessions on the default speakers
 	sessAt    time.Time
 )
@@ -115,7 +135,13 @@ func volWorker() {
 				dropEndpoint(wca.ECapture)
 			}
 		case r := <-volCall:
-			if r.list != nil {
+			if r.devs != nil {
+				flow := uint32(wca.ERender)
+				if r.mic {
+					flow = wca.ECapture
+				}
+				r.devs <- enumDevices(flow)
+			} else if r.list != nil {
 				refreshSessions(true)
 				seen := map[string]bool{}
 				var names []string
@@ -144,8 +170,11 @@ func volWorker() {
 	}
 }
 
-func openEndpoint(flow uint32) (*endpoint, error) {
-	if e := endpoints[flow]; e != nil {
+// openEndpoint opens the volume control of the chosen device, or of the Windows default when none
+// is chosen or the chosen one is unplugged (it is picked up again once it is back).
+func openEndpoint(flow uint32, devID string) (*endpoint, error) {
+	key := epKey(flow, devID)
+	if e := endpoints[key]; e != nil {
 		return e, nil
 	}
 	var de *wca.IMMDeviceEnumerator
@@ -154,24 +183,95 @@ func openEndpoint(flow uint32) (*endpoint, error) {
 	}
 	defer de.Release()
 	var dev *wca.IMMDevice
-	if err := de.GetDefaultAudioEndpoint(flow, wca.EConsole, &dev); err != nil {
-		return nil, err
+	if devID != "" {
+		dev = findDevice(de, flow, devID)
+	}
+	if dev == nil {
+		if err := de.GetDefaultAudioEndpoint(flow, wca.EConsole, &dev); err != nil {
+			return nil, err
+		}
 	}
 	var aev *wca.IAudioEndpointVolume
 	if err := dev.Activate(wca.IID_IAudioEndpointVolume, wca.CLSCTX_ALL, nil, &aev); err != nil {
 		dev.Release()
 		return nil, err
 	}
-	e := &endpoint{dev, aev}
-	endpoints[flow] = e
+	e := &endpoint{flow, dev, aev}
+	endpoints[key] = e
 	return e, nil
 }
 
+// eachDevice walks the active devices of one kind; visit returns true to keep the device (and stop).
+func eachDevice(de *wca.IMMDeviceEnumerator, flow uint32, visit func(dev *wca.IMMDevice, id string) bool) {
+	var dc *wca.IMMDeviceCollection
+	if err := de.EnumAudioEndpoints(flow, wca.DEVICE_STATE_ACTIVE, &dc); err != nil || dc == nil {
+		return
+	}
+	defer dc.Release()
+	var n uint32
+	if dc.GetCount(&n) != nil {
+		return
+	}
+	for i := uint32(0); i < n; i++ {
+		var dev *wca.IMMDevice
+		if dc.Item(i, &dev) != nil || dev == nil {
+			continue
+		}
+		var id string
+		if dev.GetId(&id) == nil && visit(dev, id) {
+			return
+		}
+		dev.Release()
+	}
+}
+
+func findDevice(de *wca.IMMDeviceEnumerator, flow uint32, devID string) *wca.IMMDevice {
+	var found *wca.IMMDevice
+	eachDevice(de, flow, func(dev *wca.IMMDevice, id string) bool {
+		if id == devID {
+			found = dev
+			return true
+		}
+		return false
+	})
+	return found
+}
+
+func enumDevices(flow uint32) []audioDev {
+	list := []audioDev{}
+	var de *wca.IMMDeviceEnumerator
+	if err := wca.CoCreateInstance(wca.CLSID_MMDeviceEnumerator, 0, wca.CLSCTX_ALL, wca.IID_IMMDeviceEnumerator, &de); err != nil {
+		return list
+	}
+	defer de.Release()
+	eachDevice(de, flow, func(dev *wca.IMMDevice, id string) bool {
+		name := ""
+		var ps *wca.IPropertyStore
+		if dev.OpenPropertyStore(wca.STGM_READ, &ps) == nil && ps != nil {
+			var pv wca.PROPVARIANT
+			if ps.GetValue(&wca.PKEY_Device_FriendlyName, &pv) == nil {
+				name = pv.String()
+			}
+			ps.Release()
+		}
+		if name == "" {
+			name = "Unnamed device"
+		}
+		list = append(list, audioDev{ID: id, Name: name})
+		return false
+	})
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list
+}
+
+// dropEndpoint closes every opened control of one kind (speakers or microphones).
 func dropEndpoint(flow uint32) {
-	if e := endpoints[flow]; e != nil {
-		e.aev.Release()
-		e.dev.Release()
-		delete(endpoints, flow)
+	for key, e := range endpoints {
+		if e.flow == flow {
+			e.aev.Release()
+			e.dev.Release()
+			delete(endpoints, key)
+		}
 	}
 	if flow == wca.ERender {
 		dropSessions()
@@ -192,7 +292,7 @@ func applyVolume(r *volReq) error {
 	switch r.kind {
 	case volMaster, volMic:
 		for try := 0; try < 2; try++ {
-			e, err := openEndpoint(flowOf(r.kind))
+			e, err := openEndpoint(flowOf(r.kind), r.dev)
 			if err != nil {
 				return err
 			}
@@ -222,7 +322,7 @@ func readLevel(r *volReq) float32 {
 	var level float32 = -1
 	switch r.kind {
 	case volMaster, volMic:
-		if e, err := openEndpoint(flowOf(r.kind)); err == nil {
+		if e, err := openEndpoint(flowOf(r.kind), r.dev); err == nil {
 			if e.aev.GetMasterVolumeLevelScalar(&level) != nil {
 				level = -1
 			}
@@ -259,7 +359,7 @@ func refreshSessions(force bool) {
 	}
 	dropSessions()
 	sessAt = time.Now()
-	e, err := openEndpoint(wca.ERender)
+	e, err := openEndpoint(wca.ERender, "")
 	if err != nil {
 		return
 	}

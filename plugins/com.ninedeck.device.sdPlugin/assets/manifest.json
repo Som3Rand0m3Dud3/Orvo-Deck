@@ -2,7 +2,7 @@
 	"Name": "NineDeck",
 	"Description": "Device support for the NineDeck macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.3.10",
+	"Version": "0.4.0",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",
@@ -25,7 +25,7 @@
 			"Name": "Master volume",
 			"UUID": "com.ninedeck.device.mastervolume",
 			"Icon": "assets/mastervolume",
-			"Tooltip": "Slider sets the Windows volume",
+			"Tooltip": "Slider sets the volume of your speakers or headphones (the Windows default, or ones you choose)",
 			"Controllers": [
 				"Encoder"
 			],
@@ -35,7 +35,8 @@
 					"Title": "Master volume"
 				}
 			],
-			"SupportedInMultiActions": false
+			"SupportedInMultiActions": false,
+			"PropertyInspectorPath": "assets/pi/audiodevice.html"
 		},
 		{
 			"Name": "App volume",
@@ -58,7 +59,7 @@
 			"Name": "Mic level",
 			"UUID": "com.ninedeck.device.miclevel",
 			"Icon": "assets/miclevel",
-			"Tooltip": "Slider sets your microphone level",
+			"Tooltip": "Slider sets a microphone's level (the Windows default, or one you choose)",
 			"Controllers": [
 				"Encoder"
 			],
@@ -68,7 +69,8 @@
 					"Title": "Mic level"
 				}
 			],
-			"SupportedInMultiActions": false
+			"SupportedInMultiActions": false,
+			"PropertyInspectorPath": "assets/pi/audiodevice.html"
 		}
 	],
 	"DeviceNamespace": "nd",

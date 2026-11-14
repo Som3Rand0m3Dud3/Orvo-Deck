@@ -69,8 +69,7 @@
 					{/if}
 				{/key}
 			</div>
-			<p class="orvo-label px-5 pt-2 pb-2 border-t border-neutral-700">Actions</p>
-			<ActionList bind:this={$actionList} />
+			<div class="grow"></div>
 			<AppUpdateCard />
 			{#if lastDevice}<PadFirmware device={lastDevice} />{/if}
 			{#each Object.keys(devices) as id (id)}
@@ -92,6 +91,7 @@
 			{:else}
 				<NoDevicesDetected />
 			{/if}
+			<ActionList bind:this={$actionList} />
 		</main>
 
 		<aside class="relative flex flex-col w-[23rem] shrink-0 bg-neutral-900 border-l border-neutral-700 min-h-0 overflow-auto">

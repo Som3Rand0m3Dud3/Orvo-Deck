@@ -34,20 +34,38 @@ var (
 	slPickup   = map[string]int{}    // device -> level (0-1000) the slider must reach to take over
 )
 
+// audioDev is one set of speakers or one microphone, as offered in the action's settings.
+type audioDev struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// devOf: the speakers / mic chosen for a master volume or mic level action ("" = Windows default).
+func devOf(a *sliderAction) string {
+	if a.action == actApp {
+		return ""
+	}
+	dev, _ := a.settings["device"].(string)
+	return dev
+}
+
 func targetKey(a *sliderAction) string {
 	app, _ := a.settings["app"].(string)
+	if dev := devOf(a); dev != "" {
+		return a.action + "|" + appKey(app) + "|" + dev
+	}
 	return a.action + "|" + appKey(app)
 }
 
 func levelOf(a *sliderAction) (float32, bool) {
 	switch a.action {
 	case actMaster:
-		return getVolume(volMaster, "")
+		return getVolume(volMaster, "", devOf(a))
 	case actMic:
-		return getVolume(volMic, "")
+		return getVolume(volMic, "", devOf(a))
 	case actApp:
 		app, _ := a.settings["app"].(string)
-		return getVolume(volApp, app)
+		return getVolume(volApp, app, "")
 	}
 	return 0, false
 }
@@ -247,12 +265,12 @@ func sliderMoved(p *pad, v int) {
 func applyLevel(a *sliderAction, level float32) {
 	switch a.action {
 	case actMaster:
-		setVolume(volMaster, "", level)
+		setVolume(volMaster, "", devOf(a), level)
 	case actMic:
-		setVolume(volMic, "", level)
+		setVolume(volMic, "", devOf(a), level)
 	case actApp:
 		app, _ := a.settings["app"].(string)
-		setVolume(volApp, app, level)
+		setVolume(volApp, app, "", level)
 	}
 }
 
@@ -295,6 +313,15 @@ func handleActionEvent(msg []byte) {
 			go func() {
 				send(map[string]any{"event": "sendToPropertyInspector", "action": ev.Action, "context": ev.Context,
 					"payload": map[string]any{"apps": listApps()}})
+			}()
+		} else if ev.Action == actMaster || ev.Action == actMic {
+			go func() {
+				devices := listAudioDevices(ev.Action == actMic)
+				if devices == nil {
+					devices = []audioDev{}
+				}
+				send(map[string]any{"event": "sendToPropertyInspector", "action": ev.Action, "context": ev.Context,
+					"payload": map[string]any{"devices": devices}})
 			}()
 		}
 		return

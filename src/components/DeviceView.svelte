@@ -8,10 +8,10 @@
 	import Key from "./Key.svelte";
 
 	import { t } from "$lib/i18n";
-	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
+	import { inspectedInstance, inspectedParentAction, placeAction } from "$lib/propertyInspector";
 	import { profileManager } from "$lib/singletons";
 	import { listen } from "@tauri-apps/api/event";
-	import { onDestroy } from "svelte";
+	import { onDestroy, tick } from "svelte";
 
 	import { invoke } from "@tauri-apps/api/core";
 
@@ -76,6 +76,17 @@
 			array[destination.position] = response;
 			profile = profile;
 		}
+	}
+
+	// Orvo: the action tray puts an action on the selected empty box (click a box, then click an action).
+	$: if ($placeAction && $placeAction.context.device == device.id && $placeAction.context.profile == profile.id) {
+		const { context, action } = $placeAction;
+		placeAction.set(null);
+		handlePaste({ type: "action", action }, context).then(async () => {
+			await tick();
+			const array = context.controller == "Encoder" ? profile.sliders : context.controller == "Infobar" ? profile.infobars : profile.keys;
+			if (array[context.position]) inspectedInstance.set(`${context.device}.${context.profile}.${context.controller}.${context.position}.0`);
+		});
 	}
 
 	// Orvo: NineDeck shows its slider as a tall bar beside the keys, moving live with the real one.
@@ -157,6 +168,17 @@
 	$: touchpointRowIndex = device.rows + (device.encoders > 0 ? 1 : 0);
 	$: keypadRowWidth = device.columns * 132;
 
+	// Orvo: the action tray sits under the pad, so shrink the pad to fit the room that is left.
+	let availableHeight = 0;
+	let availableWidth = 0;
+	$: naturalWidth = 40 + device.columns * 132 + (isNineDeck ? 24 + 308 : 0);
+	$: naturalHeight =
+		52 + 40 + (isNineDeck ? Math.max(device.rows * 132, 396) : device.rows * 132 + (device.encoders > 0 ? 132 : 0) + (pages.length > 0 ? 68 : 0)) + (device.touchpoints > 0 ? 132 : 0);
+	$: padZoom =
+		availableHeight > 0 && availableWidth > 0 && !overflowsX && !overflowsY
+			? Math.max(0.5, Math.min(1, (availableHeight - 40) / naturalHeight, (availableWidth - 56) / naturalWidth))
+			: 1;
+
 	function flatIndexFromRowCol(row: number, col: number): number {
 		let index = 0;
 		for (let r = 0; r < row; r++) index += gridRowLengths[r];
@@ -228,7 +250,9 @@
 {#key device}
 	<span id="grid-description" class="sr-only">{$t("device_view.grid_description")}</span>
 	<div
-		class="flex flex-col justify-center grow px-10 py-6 overflow-auto"
+		class="flex flex-col justify-center grow min-h-0 px-6 py-4 overflow-auto"
+		bind:clientHeight={availableHeight}
+		bind:clientWidth={availableWidth}
 		class:items-center={device.columns <= 9}
 		class:hidden={$inspectedParentAction || selectedDevice != device.id}
 		class:device-fade-x={overflowsX && !overflowsY}
@@ -243,6 +267,7 @@
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}
 	>
+		<div class="flex flex-col" class:items-center={device.columns <= 9} style={`zoom: ${padZoom}; --orvo-zoom: ${padZoom}`}>
 		<div class="flex items-baseline gap-3 mb-5 flex-wrap" style={`max-width: ${Math.max(keypadRowWidth, 440) + 48}px; width: 100%`}>
 			<h1 class="m-0 text-2xl font-bold tracking-tight text-neutral-100">{pageName(profile.id)}</h1>
 			<span class="text-sm text-neutral-400">Page {pageIndex + 1} of {Math.max(pages.length, 1)} · click a box to edit it</span>
@@ -399,6 +424,7 @@
 				>
 			</div>
 		{/if}
+		</div>
 	</div>
 {/key}
 

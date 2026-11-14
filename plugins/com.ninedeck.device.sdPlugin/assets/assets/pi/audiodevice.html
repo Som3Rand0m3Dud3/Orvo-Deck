@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #12151b; }
+body { padding: 12px; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; color: #d4d8e0; }
+label { display: block; margin-bottom: 6px; color: #8a91a0; }
+.row { display: flex; gap: 6px; }
+select, button { height: 34px; border-radius: 8px; border: 1px solid #2e3440; background: #1a1f28; color: #e6e8ee; font: inherit; }
+select { flex: 1; min-width: 0; padding: 0 8px; }
+button { padding: 0 10px; cursor: pointer; }
+button:hover { background: #232a35; }
+p { margin: 8px 0 0; color: #8a91a0; line-height: 1.4; }
+</style>
+</head>
+<body>
+<label for="pick" id="label">Device to control</label>
+<div class="row">
+	<select id="pick"><option value="">Windows default</option></select>
+	<button id="refresh" title="Refresh the list">↻</button>
+</div>
+<p id="note">"Windows default" follows whatever Windows is using. If the one you choose is unplugged, the slider controls the Windows default until it is back.</p>
+<script>
+let ws, uuid, actionUUID, settings = {};
+const pick = document.getElementById("pick");
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+	uuid = inUUID;
+	try { const a = JSON.parse(actionInfo); actionUUID = a.action; settings = a.payload.settings || {}; } catch (e) {}
+	const mic = /miclevel$/.test(actionUUID || "");
+	document.getElementById("label").textContent = mic ? "Microphone to control" : "Speakers or headphones to control";
+	fill([]);
+	ws = new WebSocket("ws://127.0.0.1:" + port);
+	ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
+	ws.onmessage = (m) => {
+		let msg; try { msg = JSON.parse(m.data); } catch (e) { return; }
+		if (msg.event === "sendToPropertyInspector" && msg.payload && Array.isArray(msg.payload.devices)) fill(msg.payload.devices);
+	};
+}
+function fill(devices) {
+	const cur = settings.device || "";
+	pick.innerHTML = "";
+	const add = (value, text) => {
+		const o = document.createElement("option");
+		o.value = value; o.textContent = text;
+		pick.appendChild(o);
+	};
+	add("", "Windows default");
+	for (const d of devices) add(d.id, d.name);
+	if (cur && !devices.some((d) => d.id === cur)) add(cur, (settings.deviceName || "Chosen device") + " (not connected)");
+	pick.value = cur;
+}
+pick.addEventListener("change", () => {
+	settings.device = pick.value;
+	settings.deviceName = pick.value ? pick.options[pick.selectedIndex].textContent.replace(/ \(not connected\)$/, "") : "";
+	if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+});
+document.getElementById("refresh").addEventListener("click", () => {
+	if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: "sendToPlugin", action: actionUUID, context: uuid, payload: { refreshDevices: true } }));
+});
+</script>
+</body>
+</html>

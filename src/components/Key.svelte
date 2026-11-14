@@ -92,6 +92,10 @@
 		const rect = canvas.getBoundingClientRect();
 		let x = event instanceof MouseEvent && event.x ? event.x : rect.left;
 		let y = event instanceof MouseEvent && event.y ? event.y : rect.bottom;
+		// The pad may be shrunk to make room for the action tray: the menu sits inside that zoom.
+		const zoom = parseFloat(getComputedStyle(canvas).getPropertyValue("--orvo-zoom")) || 1;
+		x /= zoom;
+		y /= zoom;
 		$openContextMenu = { context, x, y };
 		await tick();
 		contextMenuEl?.querySelector("button")?.focus();

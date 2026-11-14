@@ -101,7 +101,7 @@
 	<div class="flex flex-col items-center justify-center h-full px-8 text-center text-neutral-400">
 		<div class="mb-4 w-14 h-14 rounded-2xl border-2 border-dashed border-neutral-600"></div>
 		<p class="font-semibold text-neutral-300">Click a box to edit it</p>
-		<p class="mt-1 text-sm">Drag an action from the left onto any of the 9 boxes, then choose how it looks on your pad.</p>
+		<p class="mt-1 text-sm">Drag an action from the tray below onto a box, or click an empty box and then an action. Then choose how it looks on your pad.</p>
 	</div>
 {:else}
 	<div class="flex flex-col gap-5 p-5">
