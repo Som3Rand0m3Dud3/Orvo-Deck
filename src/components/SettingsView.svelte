@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { appUpdate } from "$lib/orvoUpdate";
 	import ClockClockwise from "phosphor-svelte/lib/ClockClockwise";
 	import ClockCounterClockwise from "phosphor-svelte/lib/ClockCounterClockwise";
 	import Gear from "phosphor-svelte/lib/Gear";
@@ -81,6 +82,7 @@
 		updateState = "checking";
 		try {
 			releases = await invoke<Release[]>("list_releases", { includePrerelease: testVersions });
+			appUpdate.set(releases.find((r) => r.newer) ? { tag: releases.find((r) => r.newer)!.tag } : null);
 			selectedTag = (releases.find((r) => r.newer) ?? releases.find((r) => r.current) ?? releases[0])?.tag ?? "";
 			updateState = "idle";
 		} catch {
@@ -104,6 +106,12 @@
 	}
 
 	let showPopup: boolean;
+	// opening Settings checks for updates straight away
+	let wasOpen = false;
+	$: if (showPopup && !wasOpen) {
+		wasOpen = true;
+		if (updateState != "installing") checkUpdates();
+	} else if (!showPopup) wasOpen = false;
 
 	let theme = document.documentElement.dataset.theme == "light" ? "light" : "dark";
 	function setTheme(value: "dark" | "light") {
@@ -147,10 +155,12 @@
 </script>
 
 <button
-	class="px-3 py-1 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
+	class="relative px-3 py-1 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
 	on:click={() => (showPopup = true)}
+	title={$appUpdate ? `Orvo Studio ${$appUpdate.tag} is available` : undefined}
 >
 	{$t("settings.button")}
+	{#if $appUpdate}<span class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-neutral-900" aria-label="Update available"></span>{/if}
 </button>
 
 <svelte:window

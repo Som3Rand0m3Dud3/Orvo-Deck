@@ -856,7 +856,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.9.2"
+const latestFirmware = "0.9.3"
 
 var (
 	updMu    sync.Mutex

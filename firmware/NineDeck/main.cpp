@@ -35,11 +35,12 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
+#include "logo.h"
 #include <Keyboard.h>
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.9.2"
+#define FW_VERSION "0.9.3"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -349,51 +350,25 @@ void splash() {
 bool idle = true;
 uint32_t lastHost = 0;
 
-void ring(int16_t cx, int16_t cy, int16_t r, int16_t t, uint16_t c) {
-  frame.fillCircle(cx, cy, r, c);
-  frame.fillCircle(cx, cy, r - t, C_BG);
-}
-
-// The "Ports" O: a thick ring with four ports on the diagonals (a ring joined to the O, a gap,
-// and a small donut inside).
-void drawLogo(int16_t cx, int16_t cy) {
-  const int16_t R = 34, T = 8, PR = 11;
-  const float d = (R + PR - 3) * 0.7071f;
-  for (int k = 0; k < 4; k++) {
-    int16_t px = cx + (k & 1 ? d : -d), py = cy + (k & 2 ? d : -d);
-    frame.fillCircle(px, py, PR, C_ACCENT);
-  }
-  ring(cx, cy, R, T, C_TEXT);
-  for (int k = 0; k < 4; k++) {
-    int16_t px = cx + (k & 1 ? d : -d), py = cy + (k & 2 ? d : -d);
-    frame.fillCircle(px, py, PR - 3, C_BG);       // the gap
-    ring(px, py, 5, 3, C_ACCENT);                 // the donut
-  }
-  frame.setTextSize(2);
-  frame.setTextColor(C_TEXT);
-  int16_t x1, y1; uint16_t w, h;
-  frame.getTextBounds("ORVO", 0, 0, &x1, &y1, &w, &h);
-  frame.setCursor(cx - w / 2, cy + R + 22);
-  frame.print("ORVO");
-}
-
-const int16_t LOGO_X = 0, LOGO_W = SW;
 void drawIdle(uint32_t now) {
   float phase = (now % 3000) / 3000.0f * 6.2832f;
   int16_t bob = (int16_t)(sinf(phase) * 6);        // +-6 px, one float every 3 s
-  int16_t cx = SW / 2, cy = 66 + bob;
-  frame.fillRect(LOGO_X, 0, LOGO_W, SH, C_BG);
-  // soft shadow: smaller and fainter while the logo is higher
-  int16_t sw = 30 + bob * 2;
-  frame.fillRoundRect(cx - sw, SH - 12, sw * 2, 4, 2, 0x10A2);
-  drawLogo(cx, cy);
-  push(LOGO_X, 0, LOGO_W, SH);
+  const int16_t lx = (SW - LOGO_SIZE) / 2, ly = 12 + bob;
+  uint16_t *fb = frame.getBuffer();
+  frame.fillRect(lx - 4, 0, LOGO_SIZE + 8, SH, C_BG);
+  for (int y = 0; y < LOGO_SIZE; y++) memcpy(fb + (ly + y) * SW + lx, ORVO_LOGO + y * LOGO_SIZE, LOGO_SIZE * 2);
+  // soft shadow: smaller while the logo is higher
+  int16_t sw = 34 + bob * 2;
+  frame.fillRoundRect(SW / 2 - sw, SH - 8, sw * 2, 4, 2, 0x18E3);
+  push(lx - 4, 0, LOGO_SIZE + 8, SH);
 }
 
 void enterIdle() {
   idle = true;
   for (int i = 0; i < 9; i++) hasPicture[i] = false;   // don't bring back old pictures later
   pickupMark = -1;
+  frame.fillScreen(C_BG);
+  pushAll();
 }
 
 void leaveIdle() {
@@ -422,6 +397,8 @@ void setup() {
   Serial.setTimeout(500);
   Keyboard.begin();
 
+  frame.fillScreen(C_BG);
+  pushAll();
   drawIdle(millis());                // screen is clean now: light it up
   digitalWrite(PIN_BL, HIGH);
 }
