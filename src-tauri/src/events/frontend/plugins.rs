@@ -65,23 +65,41 @@ pub async fn list_plugins(app: AppHandle) -> Result<Vec<PluginInfo>, Error> {
 
 #[command]
 pub async fn install_plugin(app: AppHandle, url: Option<String>, file: Option<String>, fallback_id: Option<String>) -> Result<(), Error> {
+	let progress = |stage: &str, done: u64, total: Option<u64>| {
+		let _ = app.emit("install_progress", serde_json::json!({ "stage": stage, "done": done, "total": total }));
+	};
 	let bytes = match file {
 		None => {
-			let resp = match reqwest::get(url.unwrap()).await {
+			let mut resp = match reqwest::get(url.unwrap()).await.and_then(|r| r.error_for_status()) {
 				Ok(resp) => resp,
 				Err(error) => return Err(anyhow::Error::from(error).into()),
 			};
-			use std::ops::Deref;
-			match resp.bytes().await {
-				Ok(bytes) => bytes.deref().to_owned(),
-				Err(error) => return Err(anyhow::Error::from(error).into()),
+			let total = resp.content_length();
+			let mut bytes = Vec::with_capacity(total.unwrap_or(0) as usize);
+			progress("download", 0, total);
+			let mut last = std::time::Instant::now();
+			loop {
+				match resp.chunk().await {
+					Ok(Some(chunk)) => {
+						bytes.extend_from_slice(&chunk);
+						if last.elapsed().as_millis() >= 100 {
+							last = std::time::Instant::now();
+							progress("download", bytes.len() as u64, total);
+						}
+					}
+					Ok(None) => break,
+					Err(error) => return Err(anyhow::Error::from(error).into()),
+				}
 			}
+			progress("download", bytes.len() as u64, total);
+			bytes
 		}
 		Some(path) => match std::fs::read(path) {
 			Ok(bytes) => bytes,
 			Err(error) => return Err(anyhow::Error::from(error).into()),
 		},
 	};
+	progress("unpack", 0, None);
 
 	let id = match crate::zip_extract::dir_name(std::io::Cursor::new(&bytes)) {
 		Ok(id) => {
@@ -112,6 +130,7 @@ pub async fn install_plugin(app: AppHandle, url: Option<String>, file: Option<St
 		let _ = initialise_plugin(actual, tx).await;
 		return Err(anyhow::Error::from(error).into());
 	}
+	progress("start", 0, None);
 	if let Err(error) = initialise_plugin(actual.clone(), tx.clone()).await {
 		log::warn!("Failed to initialise plugin at {}: {}", actual.display(), error);
 		let _ = fs::remove_dir_all(&actual).await;

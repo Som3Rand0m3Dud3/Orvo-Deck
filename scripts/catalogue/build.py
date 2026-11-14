@@ -84,9 +84,15 @@ except (OSError, ValueError):
     pass
 repo_cache = prev.get("repos", {})  # "owner/repo" -> {etag, asset, result}
 asset_cache = prev.get("assets", {})  # download url -> result (or {"skip": reason})
+# Results from an older reader lack newer fields (language, better icons): re-read those.
+READER_VERSION = 2
+def fresh(r):
+    return isinstance(r, dict) and ("skip" in r or r.get("rv", 0) >= READER_VERSION)
 # Retry anything that failed for a reason other than encryption (the reader may have improved).
 asset_cache = {u: r for u, r in asset_cache.items() if "skip" not in r or str(r["skip"]).startswith("encrypted")}
 repo_cache = {k: v for k, v in repo_cache.items() if not (isinstance(v.get("result"), dict) and "skip" in v["result"])}
+old_asset_cache = asset_cache
+asset_cache = {u: r for u, r in asset_cache.items() if fresh(r)}
 new_repo_cache = {}
 
 # ---------------------------------------------------------------- candidates by repo
@@ -267,6 +273,37 @@ def platforms_of(manifest):
     return sorted(found) or None
 
 
+# ---------------------------------------------------------------- language
+try:
+    from lingua import Language, LanguageDetectorBuilder
+    _LANGS = [Language.ENGLISH, Language.SPANISH, Language.GERMAN, Language.FRENCH, Language.PORTUGUESE,
+              Language.ITALIAN, Language.DUTCH, Language.POLISH, Language.RUSSIAN, Language.UKRAINIAN,
+              Language.CZECH, Language.SWEDISH, Language.TURKISH, Language.ARABIC, Language.CHINESE,
+              Language.JAPANESE, Language.KOREAN]
+    DETECTOR = LanguageDetectorBuilder.from_languages(*_LANGS).with_minimum_relative_distance(0.15).build()
+except ImportError:  # language tags are optional
+    DETECTOR = None
+
+
+def visible_text(html):
+    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    attrs = " ".join(re.findall(r'(?i)(?:placeholder|title|label)\s*=\s*"([^"]{2,80})"', html))
+    text = re.sub(r"(?s)<[^>]+>", " ", html)
+    text = re.sub(r"&[a-z#0-9]+;", " ", text)
+    return re.sub(r"\s+", " ", text + " " + attrs).strip()
+
+
+def language_of(text):
+    """ISO 639-1 code of the text, or None when unsure or too short."""
+    if not DETECTOR:
+        return None
+    words = re.findall(r"[^\W\d_]{2,}", text)
+    if len(words) < 4:
+        return None
+    lang = DETECTOR.detect_language_of(" ".join(words)[:4000])
+    return lang.iso_code_639_1.name.lower() if lang else None
+
+
 def read_plugin(url, allow_full=False):
     """Returns {id, name, version, platforms, icon} or {"skip": reason}."""
     zf = None
@@ -301,20 +338,53 @@ def read_plugin(url, allow_full=False):
         pid = re.sub(r"\.sdplugin$", "", folder.split("/")[-1], flags=re.I)
         result = {"id": pid, "name": manifest.get("Name"), "version": manifest.get("Version"),
                   "platforms": platforms_of(manifest), "category": manifest.get("Category")}
-        icon = manifest.get("Icon")
-        if icon:
-            for cand in (f"{folder}/{icon}@2x.png", f"{folder}/{icon}.png", f"{folder}/{icon}"):
-                if cand in real:
-                    try:
-                        data = zf.read(real[cand])
-                        if len(data) < 400_000:
-                            fname = re.sub(r"[^A-Za-z0-9._-]", "_", pid) + ".png"
-                            with open(os.path.join(ICONS, fname), "wb") as f:
-                                f.write(data)
-                            result["icon"] = ICON_BASE + fname
-                    except Exception:  # noqa: BLE001
-                        pass
+        lower = {n.lower(): n for n in names}
+
+        def find(rel):
+            rel = rel.replace("\\", "/").lstrip("./") if rel else ""
+            return lower.get(f"{folder}/{rel}".lower()) if rel else None
+
+        # Icon: the plugin icon, else the category icon, else the first action's icon.
+        icons = [manifest.get("Icon"), manifest.get("CategoryIcon")]
+        icons += [a.get("Icon") for a in manifest.get("Actions") or [] if isinstance(a, dict)]
+        for icon in filter(None, icons):
+            stem = re.sub(r"\.(png|svg|jpe?g|gif)$", "", icon, flags=re.I)
+            hit = next(filter(None, (find(c) for c in (f"{stem}@2x.png", f"{stem}.png", icon, f"{stem}.svg"))), None)
+            if not hit:
+                continue
+            try:
+                data = zf.read(real[hit])
+                if hit.lower().endswith(".svg"):
+                    # GitHub's raw server sends SVGs as plain text, which images can't show: convert.
+                    import cairosvg
+                    data = cairosvg.svg2png(bytestring=data, output_width=144, output_height=144)
+                if len(data) < 400_000:
+                    fname = re.sub(r"[^A-Za-z0-9._-]", "_", pid) + ".png"
+                    with open(os.path.join(ICONS, fname), "wb") as f:
+                        f.write(data)
+                    result["icon"] = ICON_BASE + fname
                     break
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Language: what the user actually sees (action names, tooltips, settings panels).
+        actions = [a for a in manifest.get("Actions") or [] if isinstance(a, dict)]
+        seen = " ".join(str(a.get(k) or "") for a in actions for k in ("Name", "Tooltip"))
+        panels = {manifest.get("PropertyInspectorPath")} | {a.get("PropertyInspectorPath") for a in actions}
+        for pi in [p for p in panels if p][:3]:
+            hit = find(pi)
+            if hit and zf.getinfo(real[hit]).file_size < 300_000:
+                try:
+                    seen += " " + visible_text(zf.read(real[hit]).decode("utf-8", "ignore"))
+                except Exception:  # noqa: BLE001
+                    pass
+        lang = language_of(seen) or language_of(seen + " " + str(manifest.get("Description") or ""))
+        has_en = bool(find("en.json"))
+        if has_en:
+            lang = "en"  # Orvo shows the plugin's own English translation
+        if lang:
+            result["language"] = lang
+        result["rv"] = READER_VERSION
         return result
     except Exception as e:  # noqa: BLE001
         return {"skip": f"read: {e}"[:200]}
@@ -354,7 +424,8 @@ def put(entry):
 
 for i, (key, info) in enumerate(sorted(repos.items())):
     cached = repo_cache.get(key, {})
-    st, rel, etag = gh(f"/repos/{info['full']}/releases/latest", cached.get("etag"))
+    stale = isinstance(cached.get("result"), dict) and not fresh(cached["result"])
+    st, rel, etag = gh(f"/repos/{info['full']}/releases/latest", None if stale else cached.get("etag"))
     used_api += 1
     if st == 304:
         new_repo_cache[key] = cached
@@ -388,7 +459,8 @@ for i, (key, info) in enumerate(sorted(repos.items())):
         "updated": res.get("updated"),
         "platforms": res.get("platforms") or info.get("hint") or None,
         "platforms_known": bool(res.get("platforms")),
-        "icon": info.get("icon") or res.get("icon"),
+        "icon": res.get("icon") or info.get("icon"),
+        "language": res.get("language"),
         "flags": info.get("flags"),
         "stars": info.get("stars"),
     })
@@ -404,7 +476,8 @@ for pid, p, full, info in direct_openaction:
     put({"id": pid, "name": p.get("name"), "author": p.get("author"), "description": p.get("description"),
          "source": "open-source", "via": "openaction", "repository": p.get("repository") or "", "download_url": url,
          "version": res.get("version"), "updated": None, "platforms": res.get("platforms"),
-         "platforms_known": bool(res.get("platforms")), "icon": info["icon"], "flags": p.get("flags")})
+         "platforms_known": bool(res.get("platforms")), "icon": res.get("icon") or info["icon"],
+         "language": res.get("language"), "flags": p.get("flags")})
 
 log(f"open-source plugins: {len(plugins)}")
 
@@ -426,6 +499,8 @@ for a in archive:
         res = read_plugin(url, allow_full=True)
         asset_cache[url] = res
         new_reads += 1
+    elif res is None and url in old_asset_cache:
+        res = asset_cache[url] = old_asset_cache[url]  # older read: re-read on a later run
     if res and "skip" in res and res["skip"].startswith("encrypted"):
         continue
     known = bool(res and "skip" not in res and res.get("platforms"))
@@ -434,7 +509,8 @@ for a in archive:
         "source": "archive", "via": "archive", "repository": "", "download_url": url,
         "version": (res or {}).get("version"), "updated": None,
         "platforms": (res or {}).get("platforms") if known else None, "platforms_known": known,
-        "icon": f"https://plugins.amankhanna.me/icons/{pid}.png", "flags": None,
+        "icon": (res or {}).get("icon") or f"https://plugins.amankhanna.me/icons/{pid}.png",
+        "language": (res or {}).get("language"), "flags": None,
     })
     archived += 1
 log(f"archive: {len(archive)} listed, {archived} added, {new_reads} read this run")

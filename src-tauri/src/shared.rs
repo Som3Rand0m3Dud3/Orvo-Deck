@@ -74,6 +74,19 @@ pub fn restart(app: &tauri::AppHandle) -> ! {
 
 /// Convert an icon specified in a plugin manifest to its full path.
 pub fn convert_icon(path: String) -> String {
+	// Elgato's SDK says to leave the extension off, but many plugins include it anyway.
+	let lower = path.to_lowercase();
+	if [".png", ".svg", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| lower.ends_with(e)) {
+		if let Some(stem) = lower.ends_with(".png").then(|| &path[..path.len() - 4]) {
+			let hi = format!("{stem}@2x.png");
+			if Path::new(&hi).exists() {
+				return hi;
+			}
+		}
+		if Path::new(&path).exists() {
+			return path;
+		}
+	}
 	if Path::new(&(path.clone() + ".svg")).exists() {
 		path + ".svg"
 	} else if Path::new(&(path.clone() + "@2x.png")).exists() {

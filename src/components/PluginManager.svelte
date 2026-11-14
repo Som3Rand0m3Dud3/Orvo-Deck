@@ -23,6 +23,7 @@
 	import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 	import { ask, message } from "$lib/dialog";
 	import { open } from "@tauri-apps/plugin-dialog";
+	import { fly } from "svelte/transition";
 
 	// @ts-expect-error
 	const fetch = window.fetchNative ?? window.fetch;
@@ -43,8 +44,13 @@
 			}))
 		)
 			return;
+		installing = { name, stage: file ? "unpack" : "download", done: 0, total: null };
 		try {
 			await invoke("install_plugin", { url, file, fallback_id });
+			installing = null;
+			try {
+				if ($settings) localisations.set(await invoke("get_localisations", { locale: $settings.language }));
+			} catch {}
 			message($t("plugin_manager.install.success", { name }), {
 				title: $t("plugin_manager.install.success.title", { name }),
 				buttons: { ok: $t("dialog.ok") },
@@ -52,9 +58,37 @@
 			$actionList?.reload();
 			installed = await invoke("list_plugins");
 		} catch (error: any) {
+			installing = null;
 			message(error, { title: $t("plugin_manager.install.error", { name }), buttons: { ok: $t("dialog.ok") } });
 		}
 	}
+
+	// Install progress card: shown from the moment Install is pressed until it finishes.
+	type InstallStage = "find" | "download" | "unpack" | "start" | "node";
+	let installing: { name: string; stage: InstallStage; done: number; total: number | null } | null = null;
+	listen("install_progress", ({ payload }: { payload: { stage: InstallStage; done: number; total: number | null } }) => {
+		if (installing) installing = { ...installing, ...payload };
+	});
+	const mb = (n: number) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0);
+	$: installLabel = !installing
+		? ""
+		: installing.stage == "find"
+			? "Finding the download…"
+			: installing.stage == "download"
+				? installing.total
+					? `Downloading… ${mb(installing.done)} / ${mb(installing.total)} MB`
+					: installing.done
+						? `Downloading… ${mb(installing.done)} MB`
+						: "Downloading…"
+				: installing.stage == "unpack"
+					? "Unpacking…"
+					: installing.stage == "node"
+						? installing.total
+							? `Setting up Node.js (one time)… ${mb(installing.done)} / ${mb(installing.total)} MB`
+							: "Setting up Node.js (one time)…"
+						: "Starting the plugin…";
+	$: installPercent =
+		installing && (installing.stage == "download" || installing.stage == "node") && installing.total ? Math.min(100, (installing.done / installing.total) * 100) : null;
 
 	let choices: any[] | undefined;
 	let choice: number;
@@ -98,9 +132,12 @@
 		endpoint.pathname = "/repos" + endpoint.pathname + "/releases";
 
 		let res;
+		installing = { name: plugin.name, stage: "find", done: 0, total: null };
 		try {
 			res = await (await fetch(endpoint)).json();
+			installing = null;
 		} catch (error: any) {
+			installing = null;
 			message(error, { title: $t("plugin_manager.install.error", { name: plugin.name }), buttons: { ok: $t("dialog.ok") } });
 			return;
 		}
@@ -209,6 +246,7 @@
 		platforms?: Platform[];
 		platforms_known?: boolean;
 		icon?: string;
+		language?: string;
 		flags?: { ai_assisted?: boolean };
 	};
 	let catalogue: StoreEntry[] | null = null;
@@ -280,17 +318,33 @@
 	const OS_CHOICES: OsFilter[] = ["windows", "mac", "linux", "any"];
 	const OS_LABEL: { [k in OsFilter]: string } = { windows: "Windows", mac: "macOS", linux: "Linux", any: "Any system" };
 
+	// Language: English by default. Plugins whose language is unknown count as English.
+	const LANG_NAMES: { [code: string]: string } = {
+		en: "English", es: "Spanish", de: "German", fr: "French", pt: "Portuguese", it: "Italian", nl: "Dutch", pl: "Polish",
+		ru: "Russian", uk: "Ukrainian", cs: "Czech", sv: "Swedish", tr: "Turkish", ar: "Arabic", zh: "Chinese", ja: "Japanese", ko: "Korean",
+	};
+	const langOf = (e: StoreEntry) => e.language ?? "en";
+	let langFilter = "en";
+	try {
+		langFilter = localStorage.getItem("orvo-store-lang") ?? "en";
+	} catch {}
+	$: try {
+		localStorage.setItem("orvo-store-lang", langFilter);
+	} catch {}
+	$: storeLangs = [...new Set((catalogue ?? []).map(langOf))].filter((l) => l != "en").sort((a, b) => (LANG_NAMES[a] ?? a).localeCompare(LANG_NAMES[b] ?? b));
+	const speaks = (e: StoreEntry, lang: string) => lang == "any" || langOf(e) == lang;
+
 	const fits = (e: StoreEntry, os: OsFilter) => os == "any" || !e.platforms_known || !e.platforms || e.platforms.includes(os);
 	const matches = (e: StoreEntry, q: string) =>
 		!q || e.name?.toLowerCase().includes(q) || e.author?.toLowerCase().includes(q) || e.description?.toLowerCase().includes(q) || e.id.toLowerCase().includes(q);
 	$: lowerQuery = query.toLowerCase().trim();
 	$: shownEntries = (catalogue ?? []).filter(
-		(e) => (storeTab == "all" || (storeTab == "open" ? e.source == "open-source" : storeTab == "archive" ? e.source == "archive" : false)) && fits(e, osFilter) && matches(e, lowerQuery),
+		(e) => (storeTab == "all" || (storeTab == "open" ? e.source == "open-source" : storeTab == "archive" ? e.source == "archive" : false)) && fits(e, osFilter) && speaks(e, langFilter) && matches(e, lowerQuery),
 	);
 	$: countFor = (tab: StoreTab) =>
 		tab == "orvo"
 			? installed.filter((p) => p.builtin).length
-			: (catalogue ?? []).filter((e) => (tab == "all" || (tab == "open" ? e.source == "open-source" : e.source == "archive")) && fits(e, osFilter)).length;
+			: (catalogue ?? []).filter((e) => (tab == "all" || (tab == "open" ? e.source == "open-source" : e.source == "archive")) && fits(e, osFilter) && speaks(e, langFilter)).length;
 
 	function openEntry(e: StoreEntry) {
 		if (e.source == "archive") installPlugin(e.name, e.download_url ?? null, null, e.id);
@@ -443,6 +497,16 @@
 				>
 			{/each}
 		</div>
+		<label class="flex items-center gap-2 text-sm text-neutral-400">
+			Language
+			<div class="select-wrapper">
+				<select bind:value={langFilter} class="h-8 pl-3! pr-9! rounded-full! bg-neutral-700 border border-neutral-600 text-neutral-200" aria-label="Plugin language">
+					<option value="en">English</option>
+					<option value="any">All languages</option>
+					{#each storeLangs as code}<option value={code}>{LANG_NAMES[code] ?? code.toUpperCase()}</option>{/each}
+				</select>
+			</div>
+		</label>
 	</div>
 
 	{#if storeTab != "orvo"}
@@ -482,7 +546,7 @@
 		{#if catalogueFailed}
 			<p class="mx-2 mt-4 text-sm text-neutral-400">The plugin list couldn't be loaded. Check your internet connection and open Plugins again.</p>
 		{:else if shownEntries.length == 0}
-			<p class="mx-2 mt-4 text-sm text-neutral-400">No plugins found{osFilter != "any" ? ` for ${OS_LABEL[osFilter]}` : ""}.</p>
+			<p class="mx-2 mt-4 text-sm text-neutral-400">No plugins found{osFilter != "any" ? ` for ${OS_LABEL[osFilter]}` : ""}{langFilter != "any" ? ` in ${LANG_NAMES[langFilter] ?? langFilter}` : ""}.</p>
 		{/if}
 		<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
 			{#each shownEntries as entry (entry.source + entry.id)}
@@ -505,6 +569,7 @@
 								<span class="px-1.5 rounded text-[10px] leading-4 bg-neutral-700 text-yellow-300" title="This plugin doesn't say which systems it supports">Untested on {OS_LABEL[osFilter]}</span>
 							{/if}
 							{#if entry.source == "archive"}<span class="px-1.5 rounded text-[10px] leading-4 bg-neutral-700 text-neutral-400">Old version</span>{/if}
+							{#if langOf(entry) != "en"}<span class="px-1.5 rounded text-[10px] leading-4 bg-neutral-700 text-sky-300" title="This plugin is in {LANG_NAMES[langOf(entry)] ?? langOf(entry)}">{LANG_NAMES[langOf(entry)] ?? langOf(entry).toUpperCase()}</span>{/if}
 						</span>
 					</svelte:fragment>
 					{#if entry.source == "archive"}
@@ -550,3 +615,41 @@
 		</button>
 	</div>
 {/if}
+
+{#if installing}
+	<div
+		role="status"
+		aria-live="polite"
+		transition:fly={{ y: 24, duration: 180 }}
+		class="fixed left-1/2 bottom-6 -translate-x-1/2 w-[26rem] max-w-[calc(100%-2rem)] p-4 bg-neutral-900 border border-neutral-600 rounded-xl shadow-2xl z-[70]"
+	>
+		<p class="font-semibold text-neutral-100 truncate">Installing {installing.name}</p>
+		<p class="mt-0.5 text-sm text-neutral-400">{installLabel}</p>
+		<div class="relative mt-3 h-2 overflow-hidden rounded-full bg-neutral-700">
+			{#if installPercent != null}
+				<div class="h-full rounded-full transition-[width] duration-150" style="width: {installPercent}%; background: var(--orvo-accent)"></div>
+			{:else}
+				<div class="orvo-indeterminate absolute inset-y-0 w-1/3 rounded-full" style="background: var(--orvo-accent)"></div>
+			{/if}
+		</div>
+	</div>
+{/if}
+
+<style>
+	.orvo-indeterminate {
+		animation: orvo-indeterminate 1.1s ease-in-out infinite;
+	}
+	@keyframes orvo-indeterminate {
+		from {
+			left: -33%;
+		}
+		to {
+			left: 100%;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.orvo-indeterminate {
+			animation-duration: 3s;
+		}
+	}
+</style>

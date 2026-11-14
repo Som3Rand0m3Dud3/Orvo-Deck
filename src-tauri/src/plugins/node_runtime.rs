@@ -50,9 +50,9 @@ fn major_version(program: &str, pre_args: &[String]) -> Option<u32> {
 	text.trim().trim_start_matches('v').split('.').next()?.parse().ok()
 }
 
-fn notice(message: &str) {
+fn progress(done: u64, total: Option<u64>) {
 	if let Some(app) = crate::APP_HANDLE.get() {
-		let _ = app.emit("elgato_notice", message);
+		let _ = app.emit("install_progress", serde_json::json!({ "stage": "node", "done": done, "total": total }));
 	}
 }
 
@@ -78,10 +78,9 @@ pub async fn resolve() -> anyhow::Result<NodeCmd> {
 	}
 
 	if cfg!(windows) {
-		notice("Setting up Node.js for JavaScript plugins (one-time download, about 30 MB)…");
+		progress(0, None);
 		match download().await {
 			Ok(path) => {
-				notice("Node.js is ready. JavaScript plugins will now start.");
 				return Ok(NodeCmd {
 					program: path.to_string_lossy().into_owned(),
 					pre_args: vec![],
@@ -121,7 +120,18 @@ async fn download() -> anyhow::Result<PathBuf> {
 		.context("Node.js build for this PC not found")?;
 	let folder = file.trim_end_matches(".zip").to_owned();
 
-	let bytes = client.get(format!("{base}{file}")).send().await?.error_for_status()?.bytes().await?;
+	let mut resp = client.get(format!("{base}{file}")).send().await?.error_for_status()?;
+	let total = resp.content_length();
+	let mut bytes = Vec::with_capacity(total.unwrap_or(0) as usize);
+	let mut last = std::time::Instant::now();
+	while let Some(chunk) = resp.chunk().await? {
+		bytes.extend_from_slice(&chunk);
+		if last.elapsed().as_millis() >= 100 {
+			last = std::time::Instant::now();
+			progress(bytes.len() as u64, total);
+		}
+	}
+	progress(bytes.len() as u64, total);
 
 	use sha2::{Digest, Sha256};
 	let actual = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();

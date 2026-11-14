@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install requests
+      - run: pip install requests lingua-language-detector cairosvg
 
       - name: build the catalogue
         run: python scripts/catalogue/build.py out

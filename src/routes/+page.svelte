@@ -16,6 +16,7 @@
 	import OrvoDialog from "../components/OrvoDialog.svelte";
 	import PadPreloader from "../components/PadPreloader.svelte";
 	import PagesNav from "../components/PagesNav.svelte";
+	import PanelResizer from "../components/PanelResizer.svelte";
 	import ParentActionView from "../components/ParentActionView.svelte";
 	import PluginManager from "../components/PluginManager.svelte";
 	import ProfileManager from "../components/ProfileManager.svelte";
@@ -27,6 +28,12 @@
 	let selectedProfiles: { [id: string]: Profile } = {};
 
 	initPortBase();
+
+	// Side panel widths (drag the inner edge; double-click it to reset).
+	const LEFT_DEFAULT = 288;
+	const RIGHT_DEFAULT = 368;
+	let leftWidth = LEFT_DEFAULT;
+	let rightWidth = RIGHT_DEFAULT;
 
 	// Remember the pad even while it briefly disconnects (e.g. during a firmware update).
 	let lastDevice = "";
@@ -55,27 +62,30 @@
 	</header>
 
 	<div class="flex flex-row grow min-h-0">
-		<aside class="flex flex-col w-72 shrink-0 bg-neutral-900 border-r border-neutral-700 min-h-0">
-			<div class="p-3">
-				{#key selectedDevice}
-					{#if hasDevice}
-						<PagesNav device={devices[selectedDevice]} profile={selectedProfiles[selectedDevice]} />
-						<ProfileManager
-							showSelect={false}
-							bind:device={devices[selectedDevice]}
-							bind:profile={selectedProfiles[selectedDevice]}
-							bind:this={$profileManager}
-						/>
-					{/if}
-				{/key}
-			</div>
-			<div class="grow"></div>
-			<AppUpdateCard />
-			{#if lastDevice}<PadFirmware device={lastDevice} />{/if}
-			{#each Object.keys(devices) as id (id)}
-				<PadPreloader device={id} profile={selectedProfiles[id]} />
-			{/each}
-		</aside>
+		<div class="relative flex shrink-0 min-h-0" style="width: {leftWidth}px">
+			<aside class="flex flex-col w-full bg-neutral-900 border-r border-neutral-700 min-h-0">
+				<div class="p-3">
+					{#key selectedDevice}
+						{#if hasDevice}
+							<PagesNav device={devices[selectedDevice]} profile={selectedProfiles[selectedDevice]} />
+							<ProfileManager
+								showSelect={false}
+								bind:device={devices[selectedDevice]}
+								bind:profile={selectedProfiles[selectedDevice]}
+								bind:this={$profileManager}
+							/>
+						{/if}
+					{/key}
+				</div>
+				<div class="grow"></div>
+				<AppUpdateCard />
+				{#if lastDevice}<PadFirmware device={lastDevice} />{/if}
+				{#each Object.keys(devices) as id (id)}
+					<PadPreloader device={id} profile={selectedProfiles[id]} />
+				{/each}
+			</aside>
+			<PanelResizer bind:width={leftWidth} min={220} max={480} initial={LEFT_DEFAULT} edge="right" storageKey="orvo-left-width" label="Resize left panel" />
+		</div>
 
 		<main class="relative flex flex-col grow min-w-0">
 			{#if Object.keys(devices).length > 0 && selectedProfiles}
@@ -94,17 +104,20 @@
 			<ActionList bind:this={$actionList} />
 		</main>
 
-		<aside class="relative flex flex-col w-[23rem] shrink-0 bg-neutral-900 border-l border-neutral-700 min-h-0 overflow-auto">
-			{#if hasDevice && selectedProfiles[selectedDevice]}
-				<BoxEditor bind:profile={selectedProfiles[selectedDevice]} />
-				<div class:hidden={typeof $inspectedInstance != "string"} class="flex flex-col grow border-t border-neutral-700">
-					<p class="orvo-label px-5 pt-4 pb-1">Action settings</p>
-					<PropertyInspectorView bind:device={devices[selectedDevice]} bind:profile={selectedProfiles[selectedDevice]} />
-				</div>
-			{:else}
-				<BoxEditor profile={null} />
-			{/if}
-		</aside>
+		<div class="relative flex shrink-0 min-h-0" style="width: {rightWidth}px">
+			<PanelResizer bind:width={rightWidth} min={300} max={640} initial={RIGHT_DEFAULT} edge="left" storageKey="orvo-right-width" label="Resize right panel" />
+			<aside class="relative flex flex-col w-full bg-neutral-900 border-l border-neutral-700 min-h-0 overflow-auto">
+				{#if hasDevice && selectedProfiles[selectedDevice]}
+					<BoxEditor bind:profile={selectedProfiles[selectedDevice]} />
+					<div class:hidden={typeof $inspectedInstance != "string"} class="flex flex-col grow border-t border-neutral-700">
+						<p class="orvo-label px-5 pt-4 pb-1">Action settings</p>
+						<PropertyInspectorView bind:device={devices[selectedDevice]} bind:profile={selectedProfiles[selectedDevice]} />
+					</div>
+				{:else}
+					<BoxEditor profile={null} />
+				{/if}
+			</aside>
+		</div>
 	</div>
 </div>
 
