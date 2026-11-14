@@ -39,7 +39,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.9.1"
+#define FW_VERSION "0.9.2"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -343,6 +343,65 @@ void splash() {
   pushAll();
 }
 
+// ---------- Idle screen ----------
+// When Orvo Studio isn't running (nothing heard from the PC for a few seconds; the app sends "h"
+// every second), the pad shows the Orvo logo gently floating up and down instead of old pictures.
+bool idle = true;
+uint32_t lastHost = 0;
+
+void ring(int16_t cx, int16_t cy, int16_t r, int16_t t, uint16_t c) {
+  frame.fillCircle(cx, cy, r, c);
+  frame.fillCircle(cx, cy, r - t, C_BG);
+}
+
+// The "Ports" O: a thick ring with four ports on the diagonals (a ring joined to the O, a gap,
+// and a small donut inside).
+void drawLogo(int16_t cx, int16_t cy) {
+  const int16_t R = 34, T = 8, PR = 11;
+  const float d = (R + PR - 3) * 0.7071f;
+  for (int k = 0; k < 4; k++) {
+    int16_t px = cx + (k & 1 ? d : -d), py = cy + (k & 2 ? d : -d);
+    frame.fillCircle(px, py, PR, C_ACCENT);
+  }
+  ring(cx, cy, R, T, C_TEXT);
+  for (int k = 0; k < 4; k++) {
+    int16_t px = cx + (k & 1 ? d : -d), py = cy + (k & 2 ? d : -d);
+    frame.fillCircle(px, py, PR - 3, C_BG);       // the gap
+    ring(px, py, 5, 3, C_ACCENT);                 // the donut
+  }
+  frame.setTextSize(2);
+  frame.setTextColor(C_TEXT);
+  int16_t x1, y1; uint16_t w, h;
+  frame.getTextBounds("ORVO", 0, 0, &x1, &y1, &w, &h);
+  frame.setCursor(cx - w / 2, cy + R + 22);
+  frame.print("ORVO");
+}
+
+const int16_t LOGO_X = 0, LOGO_W = SW;
+void drawIdle(uint32_t now) {
+  float phase = (now % 3000) / 3000.0f * 6.2832f;
+  int16_t bob = (int16_t)(sinf(phase) * 6);        // +-6 px, one float every 3 s
+  int16_t cx = SW / 2, cy = 66 + bob;
+  frame.fillRect(LOGO_X, 0, LOGO_W, SH, C_BG);
+  // soft shadow: smaller and fainter while the logo is higher
+  int16_t sw = 30 + bob * 2;
+  frame.fillRoundRect(cx - sw, SH - 12, sw * 2, 4, 2, 0x10A2);
+  drawLogo(cx, cy);
+  push(LOGO_X, 0, LOGO_W, SH);
+}
+
+void enterIdle() {
+  idle = true;
+  for (int i = 0; i < 9; i++) hasPicture[i] = false;   // don't bring back old pictures later
+  pickupMark = -1;
+}
+
+void leaveIdle() {
+  idle = false;
+  composeAll();
+  pushAll();
+}
+
 void setup() {
   // Backlight off first: at power-up the panel's memory holds random noise.
   pinMode(PIN_BL, OUTPUT);
@@ -363,16 +422,8 @@ void setup() {
   Serial.setTimeout(500);
   Keyboard.begin();
 
-  splash();                         // screen is clean now: light it up
+  drawIdle(millis());                // screen is clean now: light it up
   digitalWrite(PIN_BL, HIGH);
-  delay(1000);
-  for (int i = 0; i < 9; i++) {
-    char t[3];
-    snprintf(t, sizeof t, "%d", i + 1);
-    labelToPicture(i, t);
-  }
-  composeAll();
-  pushAll();
 }
 
 void handleSerial() {
@@ -383,6 +434,12 @@ void handleSerial() {
     if (c == '\r') continue;
     if (c != '\n' && n < sizeof buf - 1) { buf[n++] = c; continue; }
     buf[n] = 0; n = 0;
+    lastHost = millis();
+    if (buf[0] == 'h') {                              // heartbeat from Orvo Studio
+      if (idle) leaveIdle();
+      continue;
+    }
+    if (idle && buf[0] != '?') leaveIdle();
 
     if (buf[0] == '?') {
       Serial.print("NINEDECK " FW_VERSION " KEYS 11 BOX ");
@@ -540,7 +597,7 @@ void readSlider(uint32_t now) {
       dirty = true;
     }
   }
-  if (dirty && now - drawnAt > 16) {      // redraw the level bar (at most ~60 times a second)
+  if (dirty && !idle && now - drawnAt > 16) {      // redraw the level bar (at most ~60 times a second)
     drawnAt = now;
     dirty = false;
     composePanel();
@@ -551,6 +608,12 @@ void readSlider(uint32_t now) {
 void loop() {
   uint32_t now = millis();
   watchHost(now);
+  if (!idle && lastHost && now - lastHost > 3500) enterIdle();
+  static uint32_t idleDrawn = 0;
+  if (idle && now - idleDrawn >= 33) {           // ~30 frames a second
+    idleDrawn = now;
+    drawIdle(now);
+  }
   readSlider(now);
   for (int i = 0; i < 11; i++) {
     bool p = digitalRead(KEY_PINS[i]) == LOW;
@@ -582,7 +645,8 @@ void loop() {
       Serial.print('K'); Serial.print(i + 1); Serial.println(p ? " 1" : " 0");
       if (hidOn) { if (p) Keyboard.press(KEY_CODES[i]); else Keyboard.release(KEY_CODES[i]); }
       // instant press feedback, drawn on the pad itself
-      if (i < 9) { composeBox(i); push(boxX(i), boxY(i), BOX, BOX); }
+      if (idle) {}
+      else if (i < 9) { composeBox(i); push(boxX(i), boxY(i), BOX, BOX); }
       else { composePanel(); push(PX, 0, SW - PX, SH); }
     }
   }

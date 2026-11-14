@@ -300,6 +300,21 @@ func tryOpen(portName, serialNo string) {
 	slMu.Lock()
 	delete(slNameSent, p.id) // send the slider name / icon again
 	slMu.Unlock()
+	if !newer("0.9.2", p.fw) {
+		// "I'm here" once a second: without it the pad shows its idle logo (app closed or crashed)
+		go func() {
+			for {
+				time.Sleep(time.Second)
+				p.wmu.Lock()
+				gone := p.closed
+				p.wmu.Unlock()
+				if gone {
+					return
+				}
+				p.write("h")
+			}
+		}()
+	}
 	p.write("H 0")
 	if p.box > 0 {
 		p.page = selectedProfile(p.id)
@@ -841,7 +856,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.9.1"
+const latestFirmware = "0.9.2"
 
 var (
 	updMu    sync.Mutex

@@ -39,11 +39,67 @@ fn show_window(app: &AppHandle) -> Result<(), tauri::Error> {
 		let _ = app.set_activation_policy(ActivationPolicy::Regular);
 	}
 
+	restore_window_state(app);
 	let window = app.get_webview_window("main").ok_or_else(|| tauri::Error::WebviewNotFound)?;
 	window.show().and_then(|_| window.set_focus())
 }
 
+// Orvo: remember whether the window was full screen (or its size and place) when it is closed,
+// hidden to the tray or the app quits, and open it the same way next time (full screen by default).
+fn window_state_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+	app.path().app_config_dir().ok().map(|d| d.join("orvo-window.json"))
+}
+
+fn save_window_state(app: &AppHandle) {
+	let Some(window) = app.get_webview_window("main") else { return };
+	if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+		return;
+	}
+	let max = window.is_maximized().unwrap_or(true);
+	let mut state = serde_json::json!({ "max": max });
+	if !max {
+		if let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) {
+			state = serde_json::json!({ "max": false, "x": pos.x, "y": pos.y, "w": size.width, "h": size.height });
+		}
+	}
+	if let Some(path) = window_state_path(app) {
+		let _ = std::fs::create_dir_all(path.parent().unwrap());
+		let _ = std::fs::write(path, state.to_string());
+	}
+}
+
+static WINDOW_RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn restore_window_state(app: &AppHandle) {
+	if WINDOW_RESTORED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+		return;
+	}
+	let Some(window) = app.get_webview_window("main") else { return };
+	let state: serde_json::Value = window_state_path(app)
+		.and_then(|p| std::fs::read(p).ok())
+		.and_then(|b| serde_json::from_slice(&b).ok())
+		.unwrap_or_else(|| serde_json::json!({ "max": true }));
+	if state["max"].as_bool().unwrap_or(true) {
+		let _ = window.maximize();
+		return;
+	}
+	if let (Some(w), Some(h)) = (state["w"].as_u64(), state["h"].as_u64()) {
+		let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+	}
+	if let (Some(x), Some(y)) = (state["x"].as_i64(), state["y"].as_i64()) {
+		// only if that spot is still on a screen (a monitor may have been unplugged)
+		let on_screen = window.available_monitors().unwrap_or_default().iter().any(|m| {
+			let (p, s) = (m.position(), m.size());
+			x as i32 + 50 >= p.x && (x as i32) < p.x + s.width as i32 - 50 && y as i32 >= p.y && (y as i32) < p.y + s.height as i32 - 50
+		});
+		if on_screen {
+			let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+		}
+	}
+}
+
 fn hide_window(app: &AppHandle) -> Result<(), tauri::Error> {
+	save_window_state(app);
 	let window = app.get_webview_window("main").ok_or_else(|| tauri::Error::WebviewNotFound)?;
 	window.hide()?;
 
@@ -122,6 +178,9 @@ async fn main() {
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();
 
+			if !std::env::args().any(|v| v == "--hide") {
+				restore_window_state(app.handle());
+			}
 			#[cfg(windows)]
 			if !std::env::args().any(|v| v == "--hide") {
 				let _ = app.get_webview_window("main").unwrap().show();
@@ -233,6 +292,7 @@ async fn main() {
 						"hide" => hide_window(app),
 						"restart" => shared::restart(app),
 						"quit" => {
+							save_window_state(app);
 							app.exit(0);
 							Ok(())
 						}
@@ -361,6 +421,7 @@ async fn main() {
 				return;
 			}
 			if let WindowEvent::CloseRequested { api, .. } = event {
+				save_window_state(window.app_handle());
 				if store::get_settings().value.background {
 					let _ = hide_window(window.app_handle());
 					api.prevent_close();
