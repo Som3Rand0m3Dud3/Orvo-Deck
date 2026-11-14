@@ -13,7 +13,7 @@
 	import { PRODUCT_NAME } from "$lib/singletons";
 
 	import { trayScale } from "$lib/tray";
-	import { SOUND_ACTION, appView, soundboard, type SoundAction } from "$lib/soundboard";
+	import { SB_SLIDERS, SOUND_ACTION, appView, soundboard, type SoundAction } from "$lib/soundboard";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { tick } from "svelte";
@@ -46,14 +46,20 @@
 			}))
 		: [];
 
+	$: soundSliders = Object.values(categories)
+		.flatMap((c) => c.actions)
+		.filter((a) => SB_SLIDERS.includes(a.uuid));
 	const cubeKey = (action: SoundAction) => action.plugin + action.uuid + (action.orvoSound?.id ?? "");
 
 	let sorted: [string, Category][] = [];
 	$: sorted = [
 		...Object.entries(categories)
-			.map(([name, c]): [string, Category] => [name, { ...c, actions: c.actions.filter((a) => a.visible_in_action_list !== false && a.uuid != SOUND_ACTION) }])
+			.map(([name, c]): [string, Category] => [
+				name,
+				{ ...c, actions: c.actions.filter((a) => a.visible_in_action_list !== false && a.uuid != SOUND_ACTION && !SB_SLIDERS.includes(a.uuid)) },
+			])
 			.filter(([_, { actions }]) => actions.length > 0),
-		...(soundAction ? [[SOUNDBOARD, { icon: soundAction.icon, actions: soundCubes }] as [string, Category]] : []),
+		...(soundAction ? [[SOUNDBOARD, { icon: soundAction.icon, actions: [...soundSliders, ...soundCubes] }] as [string, Category]] : []),
 	].sort((a, b) => (a[0] == PRODUCT_NAME ? -1 : b[0] == PRODUCT_NAME ? 1 : a[0] == SOUNDBOARD ? -1 : b[0] == SOUNDBOARD ? 1 : a[0].localeCompare(b[0])));
 
 	const read = (key: string) => {

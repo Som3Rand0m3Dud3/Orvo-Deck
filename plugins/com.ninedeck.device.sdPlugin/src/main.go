@@ -141,6 +141,8 @@ func main() {
 			Taper      *int      `json:"taper"`
 			Flip       *int      `json:"flip"`
 			Recal      bool      `json:"recalibrate"`
+			SbMic      *float64  `json:"mic"`
+			SbSound    *float64  `json:"sound"`
 		}
 		json.Unmarshal(msg, &ev)
 		switch ev.Event {
@@ -178,6 +180,8 @@ func main() {
 				}
 				padsMu.Unlock()
 			}
+		case "orvoSoundboardLevels":
+			setSoundboardLevels(ev.SbMic, ev.SbSound)
 		case "orvoPageImages":
 			go storePage(ev.Device, ev.Profile, ev.Images)
 		case "orvoPadStatusRequest":

@@ -13,7 +13,8 @@
 	import UploadSimple from "phosphor-svelte/lib/UploadSimple";
 
 	import { ask, message } from "$lib/dialog";
-	import { refreshSoundboard, soundboard, type Sound, type SoundboardConfig } from "$lib/soundboard";
+	import { MIC_PRESETS, refreshSoundboard, soundboard, type MicFx, type MicPreset, type Sound, type SoundboardConfig } from "$lib/soundboard";
+	import SlidersHorizontal from "phosphor-svelte/lib/SlidersHorizontal";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { open } from "@tauri-apps/plugin-dialog";
@@ -73,6 +74,44 @@
 		}, 120);
 	}
 	const pct = (v: number) => Math.round(v * 100);
+
+	// ---------- voice cleanup
+	let showFx = false;
+	function setPreset(p: string) {
+		const preset = p as MicPreset;
+		if (preset == "custom") setConfig({ mic_preset: "custom" });
+		else setConfig({ mic_preset: preset, mic_fx: { ...MIC_PRESETS[preset].fx } });
+	}
+	function setFx(patch: Partial<MicFx>) {
+		if (config) setConfig({ mic_preset: "custom", mic_fx: { ...config.mic_fx, ...patch } });
+	}
+	$: presetHint = config && config.mic_preset != "custom" ? MIC_PRESETS[config.mic_preset]?.hint : "Your own mix of the settings below.";
+	const FX_SLIDERS: [keyof MicFx, string, string][] = [
+		["denoise", "Noise removal", "Fans, keyboard, room noise"],
+		["breath", "Breath reduction", "Breaths and small sounds between words"],
+		["deess", "De-esser", "Softens sharp \u201cs\u201d sounds"],
+		["warmth", "Warmth", "Fuller, deeper voice"],
+		["clarity", "Clarity", "Crisper, more present voice"],
+		["comp", "Compression", "Evens out loud and quiet words"],
+	];
+	const fxValue = (fx: MicFx, key: keyof MicFx) => Number(fx[key]);
+
+	type Meter = { level_db: number; out_db: number; gate_open: boolean; voice: number; running: boolean };
+	let meter: Meter = { level_db: -120, out_db: -120, gate_open: false, voice: 0, running: false };
+	const meterTimer = setInterval(async () => {
+		meter = await invoke<Meter>("sb_meter").catch(() => meter);
+	}, 60);
+	let listening = false;
+	function toggleListen() {
+		listening = !listening;
+		invoke("sb_listen", { on: listening });
+	}
+	onDestroy(() => {
+		clearInterval(meterTimer);
+		if (listening) invoke("sb_listen", { on: false });
+	});
+	const FLOOR = -80;
+	const meterPct = (d: number) => Math.max(0, Math.min(100, ((d - FLOOR) / -FLOOR) * 100));
 
 	// ---------- adding sounds
 	let adding = 0;
@@ -284,6 +323,34 @@
 							{#each state.inputs as name}<option value={name}>{name}</option>{/each}
 						</select>
 					</div>
+					<div class="flex items-center gap-2">
+						<span class="shrink-0 text-xs text-neutral-400">Voice cleanup</span>
+						<div class="select-wrapper grow">
+							<select class="w-full h-9" aria-label="Voice cleanup preset" value={config.mic_preset} on:change={(e) => setPreset(e.currentTarget.value)}>
+								{#each Object.entries(MIC_PRESETS) as [id, p]}<option value={id}>{p.label}</option>{/each}
+								<option value="custom">Custom</option>
+							</select>
+						</div>
+						<button
+							class="flex items-center gap-1.5 shrink-0 px-3 h-9 rounded-lg text-sm border transition-colors {showFx
+								? 'text-neutral-100 bg-neutral-800'
+								: 'text-neutral-300 border-neutral-600 hover:bg-neutral-800'}"
+							style={showFx ? "border-color: var(--orvo-accent)" : ""}
+							aria-expanded={showFx}
+							on:click={() => (showFx = !showFx)}><SlidersHorizontal size="16" /> Adjust</button
+						>
+					</div>
+					<div
+						class="relative h-2 rounded-full bg-neutral-800 overflow-hidden"
+						role="meter"
+						aria-label="Your voice level"
+						aria-valuemin={FLOOR}
+						aria-valuemax={0}
+						aria-valuenow={Math.round(Math.max(FLOOR, meter.out_db))}
+						title="Your voice after cleanup"
+					>
+						<div class="h-full rounded-full transition-[width] duration-75" style="width: {meterPct(meter.out_db)}%; background: var(--orvo-accent)"></div>
+					</div>
 					<div class="flex flex-col gap-1">
 						<div class="flex justify-between text-xs text-neutral-400"><span>Voice volume</span><span>{pct(config.mic_gain)}%</span></div>
 						<input
@@ -338,6 +405,108 @@
 					</div>
 				</div>
 			</section>
+
+			{#if showFx}
+				<section class="flex flex-col gap-4 p-5 rounded-2xl bg-neutral-900 border border-neutral-700">
+					<div class="flex flex-wrap items-center gap-3">
+						<div class="grow min-w-[14rem]">
+							<h2 class="font-semibold text-neutral-100">Voice cleanup · {config.mic_preset == "custom" ? "Custom" : MIC_PRESETS[config.mic_preset].label}</h2>
+							<p class="text-sm text-neutral-400">{presetHint} Only your mic is processed; sounds stay untouched.</p>
+						</div>
+						<button
+							class="flex items-center gap-1.5 px-4 h-10 rounded-lg text-sm font-semibold transition-colors {listening
+								? 'text-white'
+								: 'text-neutral-200 bg-neutral-800 border border-neutral-600 hover:bg-neutral-700'}"
+							style={listening ? "background: var(--orvo-accent)" : ""}
+							aria-pressed={listening}
+							title="Play your cleaned-up voice in your headphones while you tune it"
+							on:click={toggleListen}><Headphones size="16" /> {listening ? "Listening…" : "Hear myself"}</button
+						>
+					</div>
+
+					<div class="flex flex-col gap-1.5">
+						<div class="flex justify-between text-xs text-neutral-400">
+							<span>Your mic {config.mic_fx.gate ? (meter.gate_open ? "· gate open" : "· gate closed") : ""}</span>
+							<span>{meter.running ? `${Math.round(Math.max(FLOOR, meter.level_db))} dB` : "mic not running"}</span>
+						</div>
+						<div class="relative h-3 rounded-full bg-neutral-800 overflow-hidden">
+							<div
+								class="h-full rounded-full transition-[width] duration-75"
+								style="width: {meterPct(meter.level_db)}%; background: {!config.mic_fx.gate || meter.gate_open ? 'var(--orvo-accent)' : '#525252'}"
+							></div>
+							{#if config.mic_fx.gate}<div
+									class="absolute top-0 bottom-0 w-0.5 bg-amber-400"
+									style="left: {meterPct(config.mic_fx.gate_db)}%"
+									title="Gate level"
+								></div>{/if}
+						</div>
+						<p class="text-xs text-neutral-500">Breathe and stay quiet: the bar should stay left of the yellow line. Talk: it should pass it.</p>
+					</div>
+
+					<div class="grid gap-x-6 gap-y-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+						<label class="flex items-center justify-between gap-3 text-sm text-neutral-200">
+							<span>Rumble filter <span class="block text-xs text-neutral-500">Desk bumps, hum, AC</span></span>
+							<input
+								type="checkbox"
+								class="accent-[var(--orvo-accent)] w-4 h-4"
+								checked={config.mic_fx.rumble}
+								on:change={(e) => setFx({ rumble: e.currentTarget.checked })}
+							/>
+						</label>
+						{#each FX_SLIDERS as [key, label, hint]}
+							<div class="flex flex-col gap-1">
+								<div class="flex justify-between text-sm text-neutral-200">
+									<span>{label} <span class="text-xs text-neutral-500">· {hint}</span></span>
+									<span class="text-xs text-neutral-400">{pct(fxValue(config.mic_fx, key))}%</span>
+								</div>
+								<input
+									type="range"
+									min="0"
+									max="1"
+									step="0.01"
+									value={fxValue(config.mic_fx, key)}
+									aria-label={label}
+									on:input={(e) => setFx({ [key]: +e.currentTarget.value })}
+								/>
+							</div>
+						{/each}
+						<div class="flex flex-col gap-1">
+							<label class="flex items-center justify-between text-sm text-neutral-200">
+								<span>Noise gate <span class="text-xs text-neutral-500">· mutes you when you're not talking</span></span>
+								<input
+									type="checkbox"
+									class="accent-[var(--orvo-accent)] w-4 h-4"
+									checked={config.mic_fx.gate}
+									on:change={(e) => setFx({ gate: e.currentTarget.checked })}
+								/>
+							</label>
+							<div class="flex items-center gap-2" class:opacity-40={!config.mic_fx.gate}>
+								<input
+									class="grow"
+									type="range"
+									min="-80"
+									max="-20"
+									step="1"
+									value={config.mic_fx.gate_db}
+									disabled={!config.mic_fx.gate}
+									aria-label="Gate level"
+									on:input={(e) => setFx({ gate_db: +e.currentTarget.value })}
+								/>
+								<span class="w-14 text-right text-xs text-neutral-400">{config.mic_fx.gate_db} dB</span>
+							</div>
+						</div>
+						<label class="flex items-center justify-between gap-3 text-sm text-neutral-200">
+							<span>Limiter <span class="block text-xs text-neutral-500">No distortion when you shout or laugh</span></span>
+							<input
+								type="checkbox"
+								class="accent-[var(--orvo-accent)] w-4 h-4"
+								checked={config.mic_fx.limiter}
+								on:change={(e) => setFx({ limiter: e.currentTarget.checked })}
+							/>
+						</label>
+					</div>
+				</section>
+			{/if}
 		{/if}
 
 		<!-- Sounds -->

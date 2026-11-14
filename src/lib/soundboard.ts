@@ -18,6 +18,45 @@ export type SoundboardConfig = {
 	monitor_device: string | null;
 	monitor_on: boolean;
 	monitor_gain: number;
+	mic_preset: MicPreset;
+	mic_fx: MicFx;
+};
+
+export type MicPreset = "off" | "natural" | "isolation" | "studio" | "custom";
+export type MicFx = {
+	rumble: boolean;
+	denoise: number;
+	breath: number;
+	gate: boolean;
+	gate_db: number;
+	deess: number;
+	warmth: number;
+	clarity: number;
+	comp: number;
+	limiter: boolean;
+};
+/** Voice cleanup presets (Custom keeps whatever you set). */
+export const MIC_PRESETS: { [k in Exclude<MicPreset, "custom">]: { label: string; hint: string; fx: MicFx } } = {
+	off: {
+		label: "Off",
+		hint: "Your raw mic, untouched.",
+		fx: { rumble: false, denoise: 0, breath: 0, gate: false, gate_db: -55, deess: 0, warmth: 0, clarity: 0, comp: 0, limiter: false },
+	},
+	natural: {
+		label: "Natural",
+		hint: "Light cleanup. Sounds like you, just cleaner.",
+		fx: { rumble: true, denoise: 0.6, breath: 0.2, gate: false, gate_db: -60, deess: 0.2, warmth: 0, clarity: 0.1, comp: 0.2, limiter: true },
+	},
+	isolation: {
+		label: "Voice isolation",
+		hint: "Only your voice gets through. Can sound a bit processed.",
+		fx: { rumble: true, denoise: 1, breath: 0.85, gate: true, gate_db: -50, deess: 0.3, warmth: 0, clarity: 0.2, comp: 0.35, limiter: true },
+	},
+	studio: {
+		label: "Studio",
+		hint: "Broadcast sound: clean, warm, even and clear.",
+		fx: { rumble: true, denoise: 0.9, breath: 0.6, gate: true, gate_db: -55, deess: 0.5, warmth: 0.4, clarity: 0.5, comp: 0.6, limiter: true },
+	},
 };
 export type SoundboardState = {
 	sounds: Sound[];
@@ -44,6 +83,12 @@ export function refreshSoundboard(): Promise<void> {
 }
 refreshSoundboard();
 listen("soundboard_changed", () => refreshSoundboard());
+// A pad slider moved a soundboard level: update just those numbers.
+listen("soundboard_levels", ({ payload }: { payload: { mic_gain: number; sound_gain: number } }) =>
+	soundboard.update((s) => (s ? { ...s, config: { ...s.config, ...payload } } : s)),
+);
+
+export const SB_SLIDERS = ["com.ninedeck.device.sbmic", "com.ninedeck.device.sbsound"];
 
 /** A tray cube for one sound: the hidden "Play sound" action carrying which sound it plays. */
 export type SoundAction = Action & { orvoSound?: { id: string; name: string } };

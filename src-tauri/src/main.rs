@@ -189,6 +189,8 @@ async fn main() {
 			soundboard::sb_stop_all,
 			soundboard::sb_set_config,
 			soundboard::sb_refresh,
+			soundboard::sb_listen,
+			soundboard::sb_meter,
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();

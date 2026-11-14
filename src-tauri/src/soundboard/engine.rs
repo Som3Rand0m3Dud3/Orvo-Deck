@@ -16,6 +16,8 @@ use cpal::{FromSample, Sample, SizedSample};
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 
+use super::fx::{FRAME, MicFx, Processor};
+
 pub const CLIP_RATE: u32 = 48_000;
 
 /// Interleaved stereo samples at CLIP_RATE.
@@ -32,6 +34,12 @@ pub enum VoiceCmd {
 #[derive(Default)]
 pub struct Levels {
 	pub mic_on: AtomicBool,
+	/// Hear your own (processed) voice in your headphones, for tuning.
+	pub listen_self: AtomicBool,
+	pub meter_level: AtomicU32,
+	pub meter_out: AtomicU32,
+	pub meter_gate: AtomicBool,
+	pub meter_voice: AtomicU32,
 	pub mic_gain: AtomicU32,
 	pub sound_gain: AtomicU32,
 	pub monitor_on: AtomicBool,
@@ -69,6 +77,8 @@ enum Ctl {
 
 pub struct Engine {
 	ctl: Sender<Ctl>,
+	/// Voice cleanup settings, read by the mic thread every 10 ms.
+	pub fx: Arc<Mutex<MicFx>>,
 	voices: Arc<Mutex<Vec<Sender<VoiceCmd>>>>,
 	pub levels: Arc<Levels>,
 	pub status: Arc<Mutex<EngineStatus>>,
@@ -101,14 +111,22 @@ impl Engine {
 		let status = Arc::new(Mutex::new(EngineStatus::default()));
 		let voices = Arc::new(Mutex::new(Vec::new()));
 		let playing = Arc::new(Mutex::new(HashMap::new()));
+		let fx = Arc::new(Mutex::new(MicFx::default()));
 		{
-			let (levels, status, voices, playing) = (levels.clone(), status.clone(), voices.clone(), playing.clone());
+			let (levels, status, voices, playing, fx) = (levels.clone(), status.clone(), voices.clone(), playing.clone(), fx.clone());
 			std::thread::Builder::new()
 				.name("orvo-soundboard".into())
-				.spawn(move || audio_thread(rx, levels, status, voices, playing))
+				.spawn(move || audio_thread(rx, levels, status, voices, playing, fx))
 				.expect("soundboard thread");
 		}
-		Engine { ctl, voices, levels, status, playing }
+		Engine {
+			ctl,
+			fx,
+			voices,
+			levels,
+			status,
+			playing,
+		}
 	}
 
 	pub fn start(&self, routing: Routing) {
@@ -130,7 +148,14 @@ impl Engine {
 	}
 }
 
-fn audio_thread(rx: Receiver<Ctl>, levels: Arc<Levels>, status: Arc<Mutex<EngineStatus>>, voices: Arc<Mutex<Vec<Sender<VoiceCmd>>>>, playing: Arc<Mutex<HashMap<String, usize>>>) {
+fn audio_thread(
+	rx: Receiver<Ctl>,
+	levels: Arc<Levels>,
+	status: Arc<Mutex<EngineStatus>>,
+	voices: Arc<Mutex<Vec<Sender<VoiceCmd>>>>,
+	playing: Arc<Mutex<HashMap<String, usize>>>,
+	fx: Arc<Mutex<MicFx>>,
+) {
 	let mut streams: Vec<cpal::Stream> = Vec::new();
 	while let Ok(ctl) = rx.recv() {
 		// Always tear down first: device changes rebuild everything.
@@ -143,7 +168,7 @@ fn audio_thread(rx: Receiver<Ctl>, levels: Arc<Levels>, status: Arc<Mutex<Engine
 			}
 			Ctl::Start(routing) => {
 				let mut st = EngineStatus::default();
-				match open_all(&routing, &levels, &voices, &playing, &mut st) {
+				match open_all(&routing, &levels, &voices, &playing, &fx, &mut st) {
 					Ok(s) => {
 						streams = s;
 						st.running = !streams.is_empty();
@@ -167,6 +192,7 @@ fn open_all(
 	levels: &Arc<Levels>,
 	voices: &Arc<Mutex<Vec<Sender<VoiceCmd>>>>,
 	playing: &Arc<Mutex<HashMap<String, usize>>>,
+	fx: &Arc<Mutex<MicFx>>,
 	st: &mut EngineStatus,
 ) -> anyhow::Result<Vec<cpal::Stream>> {
 	let host = cpal::default_host();
@@ -177,6 +203,7 @@ fn open_all(
 	st.cable = cable.is_some();
 	st.cable_name = cable.as_ref().and_then(|d| d.name().ok());
 
+	let mut monitor_mic = None;
 	if let Some(cable) = cable {
 		// Your real mic, never the cable itself (that would echo forever).
 		let mic = match &routing.mic {
@@ -186,11 +213,12 @@ fn open_all(
 		let mic_ring = match mic {
 			Some(mic) => {
 				st.mic_name = mic.name().ok();
-				match open_mic(&mic) {
-					Ok((stream, cons, rate)) => {
+				match open_mic(&mic, fx.clone(), levels.clone()) {
+					Ok((stream, cons, listen)) => {
 						stream.play()?;
 						streams.push(stream);
-						Some((cons, rate))
+						monitor_mic = Some((listen, MIC_RATE));
+						Some((cons, MIC_RATE))
 					}
 					Err(e) => {
 						log::warn!("soundboard: mic failed: {e:#}");
@@ -217,7 +245,7 @@ fn open_all(
 	if let Some(monitor) = monitor {
 		st.monitor_name = monitor.name().ok();
 		let (tx, rx) = channel();
-		match open_output(&monitor, rx, None, levels.clone(), false, playing.clone()) {
+		match open_output(&monitor, rx, monitor_mic, levels.clone(), false, playing.clone()) {
 			Ok(stream) => {
 				stream.play()?;
 				streams.push(stream);
@@ -230,24 +258,100 @@ fn open_all(
 }
 
 type MicCons = ringbuf::HeapCons<f32>;
+type MicProd = ringbuf::HeapProd<f32>;
 
-fn open_mic(device: &cpal::Device) -> anyhow::Result<(cpal::Stream, MicCons, u32)> {
+/// The mic is cleaned up at 48 kHz (what RNNoise needs) whatever rate the mic runs at.
+pub const MIC_RATE: u32 = 48_000;
+
+/// Opens the mic. Returns its stream and two queues of cleaned-up 48 kHz voice:
+/// one for the virtual mic, one for "hear myself".
+fn open_mic(device: &cpal::Device, fx: Arc<Mutex<MicFx>>, levels: Arc<Levels>) -> anyhow::Result<(cpal::Stream, MicCons, MicCons)> {
 	let config = device.default_input_config()?;
 	let rate = config.sample_rate().0;
 	let channels = config.channels() as usize;
-	// Half a second of headroom; the reader keeps it short.
-	let (prod, cons) = HeapRb::<f32>::new(rate as usize / 2).split();
+	// Half a second of headroom; the readers keep the delay short.
+	let (prod, cons) = HeapRb::<f32>::new(MIC_RATE as usize / 2).split();
+	let (listen_prod, listen_cons) = HeapRb::<f32>::new(MIC_RATE as usize / 2).split();
+	let chain = VoiceChain::new(rate, fx, levels, prod, listen_prod);
 	let stream = match config.sample_format() {
-		cpal::SampleFormat::F32 => build_input::<f32>(device, &config.into(), channels, prod)?,
-		cpal::SampleFormat::I16 => build_input::<i16>(device, &config.into(), channels, prod)?,
-		cpal::SampleFormat::I32 => build_input::<i32>(device, &config.into(), channels, prod)?,
-		cpal::SampleFormat::U16 => build_input::<u16>(device, &config.into(), channels, prod)?,
+		cpal::SampleFormat::F32 => build_input::<f32>(device, &config.into(), channels, chain)?,
+		cpal::SampleFormat::I16 => build_input::<i16>(device, &config.into(), channels, chain)?,
+		cpal::SampleFormat::I32 => build_input::<i32>(device, &config.into(), channels, chain)?,
+		cpal::SampleFormat::U16 => build_input::<u16>(device, &config.into(), channels, chain)?,
 		other => anyhow::bail!("unsupported mic format {other:?}"),
 	};
-	Ok((stream, cons, rate))
+	Ok((stream, cons, listen_cons))
 }
 
-fn build_input<T>(device: &cpal::Device, config: &cpal::StreamConfig, channels: usize, mut prod: ringbuf::HeapProd<f32>) -> anyhow::Result<cpal::Stream>
+/// Mic thread side: mono → 48 kHz → 10 ms frames → voice cleanup → queues.
+pub struct VoiceChain {
+	step: f64,
+	pos: f64,
+	prev: f32,
+	frame: [f32; FRAME],
+	filled: usize,
+	proc: Processor,
+	fx: Arc<Mutex<MicFx>>,
+	levels: Arc<Levels>,
+	prod: MicProd,
+	listen: MicProd,
+}
+
+impl VoiceChain {
+	fn new(rate: u32, fx: Arc<Mutex<MicFx>>, levels: Arc<Levels>, prod: MicProd, listen: MicProd) -> Self {
+		let start = *fx.lock().unwrap();
+		VoiceChain {
+			step: rate as f64 / MIC_RATE as f64,
+			pos: 0.0,
+			prev: 0.0,
+			frame: [0.0; FRAME],
+			filled: 0,
+			proc: Processor::new(start),
+			fx,
+			levels,
+			prod,
+			listen,
+		}
+	}
+
+	fn push(&mut self, s: f32) {
+		// linear resampling to 48 kHz
+		while self.pos <= 1.0 {
+			let v = self.prev + (s - self.prev) * self.pos as f32;
+			self.frame[self.filled] = v;
+			self.filled += 1;
+			if self.filled == FRAME {
+				self.flush();
+			}
+			self.pos += self.step;
+		}
+		self.pos -= 1.0;
+		self.prev = s;
+	}
+
+	fn flush(&mut self) {
+		self.filled = 0;
+		if let Ok(fx) = self.fx.try_lock() {
+			let fx = *fx;
+			self.proc.set(fx);
+		}
+		self.proc.process(&mut self.frame);
+		let m = self.proc.meter;
+		store(&self.levels.meter_level, m.level_db);
+		store(&self.levels.meter_out, m.out_db);
+		store(&self.levels.meter_voice, m.voice);
+		self.levels.meter_gate.store(m.gate_open, Ordering::Relaxed);
+		let listening = self.levels.listen_self.load(Ordering::Relaxed);
+		for &v in self.frame.iter() {
+			let _ = self.prod.try_push(v);
+			if listening {
+				let _ = self.listen.try_push(v);
+			}
+		}
+	}
+}
+
+fn build_input<T>(device: &cpal::Device, config: &cpal::StreamConfig, channels: usize, mut chain: VoiceChain) -> anyhow::Result<cpal::Stream>
 where
 	T: SizedSample,
 	f32: FromSample<T>,
@@ -257,7 +361,7 @@ where
 		move |data: &[T], _| {
 			for frame in data.chunks(channels) {
 				let mono = frame.iter().map(|s| f32::from_sample(*s)).sum::<f32>() / channels as f32;
-				let _ = prod.try_push(mono);
+				chain.push(mono);
 			}
 		},
 		|e| log::warn!("soundboard mic stream: {e}"),
@@ -347,7 +451,11 @@ impl Mixer {
 			(load(&self.levels.sound_gain), load(&self.levels.mic_gain), self.levels.mic_on.load(Ordering::Relaxed))
 		} else {
 			let on = self.levels.monitor_on.load(Ordering::Relaxed);
-			(if on { load(&self.levels.monitor_gain) } else { 0.0 }, 0.0, false)
+			(
+				if on { load(&self.levels.monitor_gain) } else { 0.0 },
+				load(&self.levels.mic_gain),
+				self.levels.listen_self.load(Ordering::Relaxed),
+			)
 		};
 
 		for frame in data.chunks_mut(self.channels) {

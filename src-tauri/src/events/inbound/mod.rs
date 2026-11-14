@@ -70,6 +70,7 @@ pub enum InboundEventType {
 	DeviceBrightness(misc::DeviceBrightnessEvent),
 	OrvoPadStatus(PayloadEvent<serde_json::Value>),
 	OrvoSlider(PayloadEvent<serde_json::Value>),
+	OrvoSoundboardLevel(PayloadEvent<serde_json::Value>),
 }
 
 pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, skip_auth: bool) {
@@ -113,7 +114,9 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 				if event.context != uuid {
 					return;
 				}
-			} else if matches!(decoded, InboundEventType::OrvoPadStatus(_) | InboundEventType::OrvoSlider(_)) && uuid != crate::events::frontend::pad::NINEDECK_PLUGIN {
+			} else if matches!(decoded, InboundEventType::OrvoPadStatus(_) | InboundEventType::OrvoSlider(_) | InboundEventType::OrvoSoundboardLevel(_))
+				&& uuid != crate::events::frontend::pad::NINEDECK_PLUGIN
+			{
 				return;
 			} else if matches!(decoded, InboundEventType::SwitchProfile(_) | InboundEventType::DeviceBrightness(_))
 				&& uuid != "com.amansprojects.starterpack.sdPlugin"
@@ -173,6 +176,12 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 			InboundEventType::DeviceBrightness(event) => misc::device_brightness(event).await,
 			InboundEventType::OrvoPadStatus(event) => crate::events::frontend::pad::forward_status(event.payload).await,
 			InboundEventType::OrvoSlider(event) => crate::events::frontend::pad::forward_slider(event.payload).await,
+			InboundEventType::OrvoSoundboardLevel(event) => {
+				let which = event.payload.get("which").and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+				let value = event.payload.get("value").and_then(|v| v.as_f64()).unwrap_or(f64::NAN) as f32;
+				tokio::task::spawn_blocking(move || crate::soundboard::set_level(&which, value));
+				Ok(())
+			}
 		} && !error.to_string().contains("closed connection")
 		{
 			warn!("Failed to process incoming event from plugin: {}", error);

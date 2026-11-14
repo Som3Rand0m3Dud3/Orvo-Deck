@@ -5,6 +5,7 @@
 
 pub mod decode;
 pub mod engine;
+pub mod fx;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,14 @@ pub struct Config {
 	pub monitor_on: bool,
 	#[serde(default = "half")]
 	pub monitor_gain: f32,
+	/// "off", "natural", "isolation", "studio" or "custom" (the app keeps the preset values).
+	#[serde(default = "studio")]
+	pub mic_preset: String,
+	#[serde(default)]
+	pub mic_fx: fx::MicFx,
+}
+fn studio() -> String {
+	"studio".into()
 }
 fn yes() -> bool {
 	true
@@ -132,7 +141,18 @@ fn apply_levels(st: &State) {
 		store(&l.mic_gain, c.mic_gain.clamp(0.0, 2.0));
 		store(&l.sound_gain, c.sound_gain.clamp(0.0, 2.0));
 		store(&l.monitor_gain, c.monitor_gain.clamp(0.0, 2.0));
+		if let Ok(mut fx) = engine.fx.lock() {
+			*fx = c.mic_fx;
+		}
 	}
+}
+
+/// Tells the pad plugin the soundboard levels, so its sliders pick up from the right place.
+fn send_levels_to_plugin(c: &Config) {
+	let msg = serde_json::json!({ "event": "orvoSoundboardLevels", "mic": c.mic_gain.min(1.0), "sound": c.sound_gain.min(1.0) });
+	tauri::async_runtime::spawn(async move {
+		let _ = crate::events::outbound::orvo_send_to_plugin(crate::events::frontend::pad::NINEDECK_PLUGIN, &msg).await;
+	});
 }
 
 fn routing(c: &Config) -> Routing {
@@ -161,6 +181,53 @@ pub fn init() {
 	load(&mut st);
 	if !st.sounds.is_empty() && st.config.enabled {
 		restart(&mut st);
+	}
+	let config = st.config.clone();
+	drop(st);
+	// the plugin may still be starting: tell it twice
+	send_levels_to_plugin(&config);
+	std::thread::sleep(std::time::Duration::from_secs(5));
+	send_levels_to_plugin(&config);
+}
+
+static LEVEL_SAVE: LazyLock<Mutex<Option<std::time::Instant>>> = LazyLock::new(|| Mutex::new(None));
+
+/// A pad slider moved (Voice volume / Sounds volume): 0 – 1.
+pub fn set_level(which: &str, value: f32) {
+	let value = if value.is_finite() { value.clamp(0.0, 1.0) } else { return };
+	let mut st = STATE.lock().unwrap();
+	load(&mut st);
+	match which {
+		"mic" => st.config.mic_gain = value,
+		"sound" => st.config.sound_gain = value,
+		_ => return,
+	}
+	apply_levels(&st);
+	let (mic, sound) = (st.config.mic_gain, st.config.sound_gain);
+	drop(st);
+	if let Some(app) = crate::APP_HANDLE.get() {
+		let _ = app.emit("soundboard_levels", serde_json::json!({ "mic_gain": mic, "sound_gain": sound }));
+	}
+	// save once the slider rests
+	let first = {
+		let mut due = LEVEL_SAVE.lock().unwrap();
+		let first = due.is_none();
+		*due = Some(std::time::Instant::now());
+		first
+	};
+	if first {
+		std::thread::spawn(|| {
+			loop {
+				std::thread::sleep(std::time::Duration::from_millis(300));
+				let mut due = LEVEL_SAVE.lock().unwrap();
+				if due.map(|t| t.elapsed().as_millis() >= 400).unwrap_or(true) {
+					*due = None;
+					break;
+				}
+			}
+			let st = STATE.lock().unwrap();
+			save(&st);
+		});
 	}
 }
 
@@ -459,6 +526,51 @@ pub fn sb_set_config(config: Config) {
 		restart(&mut st);
 	} else {
 		apply_levels(&st);
+	}
+	send_levels_to_plugin(&st.config);
+}
+
+/// "Hear myself": your cleaned-up voice in your headphones while tuning (not saved).
+#[command]
+pub fn sb_listen(on: bool) {
+	let st = STATE.lock().unwrap();
+	if let Some(e) = &st.engine {
+		e.levels.listen_self.store(on, std::sync::atomic::Ordering::Relaxed);
+	}
+}
+
+#[derive(Serialize)]
+pub struct MeterReading {
+	level_db: f32,
+	out_db: f32,
+	gate_open: bool,
+	voice: f32,
+	running: bool,
+}
+
+/// Live mic meter for the Your mic card.
+#[command]
+pub fn sb_meter() -> MeterReading {
+	let st = STATE.lock().unwrap();
+	match &st.engine {
+		Some(e) => {
+			let l = &e.levels;
+			let get = |a: &std::sync::atomic::AtomicU32| f32::from_bits(a.load(std::sync::atomic::Ordering::Relaxed));
+			MeterReading {
+				level_db: get(&l.meter_level),
+				out_db: get(&l.meter_out),
+				gate_open: l.meter_gate.load(std::sync::atomic::Ordering::Relaxed),
+				voice: get(&l.meter_voice),
+				running: e.status.lock().unwrap().mic_name.is_some(),
+			}
+		}
+		None => MeterReading {
+			level_db: -120.0,
+			out_db: -120.0,
+			gate_open: false,
+			voice: 0.0,
+			running: false,
+		},
 	}
 }
 

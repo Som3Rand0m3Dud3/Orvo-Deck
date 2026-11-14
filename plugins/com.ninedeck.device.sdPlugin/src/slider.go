@@ -17,7 +17,34 @@ const (
 	actMaster = "com.ninedeck.device.mastervolume"
 	actApp    = "com.ninedeck.device.appvolume"
 	actMic    = "com.ninedeck.device.miclevel"
+	// Orvo Soundboard levels: Orvo Studio owns these, the plugin just passes the slider on.
+	actSbMic   = "com.ninedeck.device.sbmic"
+	actSbSound = "com.ninedeck.device.sbsound"
 )
+
+// Soundboard levels as Orvo Studio last reported them (0-1, 1 = 100 %).
+var (
+	sbMu     sync.Mutex
+	sbLevels = map[string]float32{"mic": 1, "sound": 1}
+)
+
+func sbWhich(action string) string {
+	if action == actSbMic {
+		return "mic"
+	}
+	return "sound"
+}
+
+func setSoundboardLevels(mic, sound *float64) {
+	sbMu.Lock()
+	defer sbMu.Unlock()
+	if mic != nil {
+		sbLevels["mic"] = float32(*mic)
+	}
+	if sound != nil {
+		sbLevels["sound"] = float32(*sound)
+	}
+}
 
 type sliderAction struct {
 	action   string
@@ -66,6 +93,14 @@ func levelOf(a *sliderAction) (float32, bool) {
 	case actApp:
 		app, _ := a.settings["app"].(string)
 		return getVolume(volApp, app, "")
+	case actSbMic, actSbSound:
+		sbMu.Lock()
+		defer sbMu.Unlock()
+		v := sbLevels[sbWhich(a.action)]
+		if v > 1 {
+			v = 1
+		}
+		return v, true
 	}
 	return 0, false
 }
@@ -112,6 +147,10 @@ func sliderName(a *sliderAction) string {
 		return "Master volume"
 	case actMic:
 		return "Mic level"
+	case actSbMic:
+		return "Voice volume"
+	case actSbSound:
+		return "Sounds volume"
 	case actApp:
 		if app, _ := a.settings["app"].(string); app != "" {
 			return cleanLabel(strings.TrimSuffix(strings.ToLower(app), ".exe")) + " volume"
@@ -133,9 +172,9 @@ func sliderIconOf(a *sliderAction) int {
 		return 0
 	}
 	switch a.action {
-	case actMaster:
+	case actMaster, actSbSound:
 		return 1
-	case actMic:
+	case actMic, actSbMic:
 		return 2
 	case actApp:
 		return 3
@@ -271,6 +310,12 @@ func applyLevel(a *sliderAction, level float32) {
 	case actApp:
 		app, _ := a.settings["app"].(string)
 		setVolume(volApp, app, "", level)
+	case actSbMic, actSbSound:
+		which := sbWhich(a.action)
+		sbMu.Lock()
+		sbLevels[which] = level
+		sbMu.Unlock()
+		send(map[string]any{"event": "orvoSoundboardLevel", "payload": map[string]any{"which": which, "value": level}})
 	}
 }
 
