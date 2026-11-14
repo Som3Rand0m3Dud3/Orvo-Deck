@@ -154,6 +154,7 @@ async fn main() {
 			frontend::plugins::install_plugin,
 			frontend::marketplace::orvo_open_marketplace,
 			frontend::marketplace::orvo_marketplace_sign_out,
+			frontend::marketplace::orvo_take_pending_installs,
 			frontend::plugins::remove_plugin,
 			frontend::plugins::reload_plugin,
 			frontend::plugins::show_settings_interface,
@@ -312,6 +313,10 @@ async fn main() {
 
 			// (new versions are shown by the Orvo Studio card and a dot on Settings)
 
+			// Orvo was started by opening a plugin file or a Marketplace link.
+			let args: Vec<String> = std::env::args().collect();
+			frontend::marketplace::handle_handoff(app.handle(), &args, false);
+
 			Ok(())
 		})
 		.plugin(
@@ -325,7 +330,9 @@ async fn main() {
 		.plugin(
 			tauri_plugin_single_instance::Builder::new()
 				.callback(|app, args, _| {
-					if let Some(pos) = args.iter().position(|x| x.starts_with("openaction://") || x.starts_with("streamdeck://"))
+					if frontend::marketplace::handle_handoff(app, &args, true) {
+						// a plugin file or a Marketplace link: installed by Orvo
+					} else if let Some(pos) = args.iter().position(|x| x.starts_with("openaction://") || x.starts_with("streamdeck://"))
 						&& let Ok(url) = reqwest::Url::parse(&args[pos])
 						&& let Some(mut path) = url.path_segments()
 					{

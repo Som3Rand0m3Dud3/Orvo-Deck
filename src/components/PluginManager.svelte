@@ -210,8 +210,16 @@
 		storeTab = "elgato";
 		installPlugin(payload.name, payload.url, payload.file, null, false);
 	});
-	listen("elgato_notice", () => {
-		message("Orvo couldn't install this plugin by itself. Download the plugin file from its Marketplace page, then use \"Install from file\".", {
+	(async () => {
+		const pending: { name: string; url: string | null; file: string | null }[] = await invoke("orvo_take_pending_installs");
+		for (const p of pending) {
+			showPopup = true;
+			await installPlugin(p.name, p.url, p.file, null, false);
+		}
+	})();
+	listen("elgato_notice", ({ payload }: { payload: unknown }) => {
+		const link = typeof payload == "string" && payload ? `\n\nLink received: ${payload}` : "";
+		message(`Orvo couldn't install this plugin by itself. Download the plugin file from its Marketplace page, then open it or use "Install from file".${link}`, {
 			title: "Elgato Marketplace",
 			buttons: { ok: $t("dialog.ok") },
 		});
@@ -223,6 +231,11 @@
 		} catch (error: any) {
 			message(String(error), { title: "Elgato Marketplace", buttons: { ok: $t("dialog.ok") } });
 		}
+	}
+	const MARKETPLACE = "https://marketplace.elgato.com/stream-deck/plugins";
+	async function openInBrowser() {
+		accountMenu = false;
+		await invoke("open_url", { url: MARKETPLACE });
 	}
 	async function signOutElgato() {
 		accountMenu = false;
@@ -311,6 +324,9 @@
 							{#if elgato.email && elgato.name}<p class="px-3 py-2 text-xs text-neutral-400 truncate">{elgato.email}</p>{/if}
 							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openMarketplace}>
 								<Storefront size="16" />Open Elgato Marketplace
+							</button>
+							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openInBrowser}>
+								<ArrowSquareOut size="16" />Open in my browser
 							</button>
 							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={signOutElgato}>
 								<SignOut size="16" />Sign out
@@ -465,10 +481,18 @@
 				{elgato.signed_in ? `Signed in as ${elgatoLabel}.` : "Sign in with your Elgato account (free) to get Marketplace plugins."}
 				Press <strong>Get</strong>, then <strong>Open in Stream Deck</strong>, and Orvo installs the plugin.
 			</p>
-			<button class="mt-4 px-4 h-10 rounded-lg text-sm font-semibold text-white" style="background: var(--orvo-accent)" on:click={openMarketplace}>
-				{elgato.signed_in ? "Browse the Elgato Marketplace" : "Sign in and browse"}
-			</button>
-			<p class="mt-3 text-xs text-neutral-500">Works through Elgato's website. If a plugin won't install by itself, download its file and use "{$t("plugin_manager.install_from_file")}".</p>
+			<div class="flex flex-row flex-wrap justify-center gap-2 mt-4">
+				<button class="px-4 h-10 rounded-lg text-sm font-semibold text-white" style="background: var(--orvo-accent)" on:click={openMarketplace}>
+					{elgato.signed_in ? "Browse the Elgato Marketplace" : "Sign in and browse"}
+				</button>
+				<button class="px-4 h-10 rounded-lg text-sm text-neutral-200 bg-neutral-700 border border-neutral-600 hover:bg-neutral-600 transition-colors" on:click={openInBrowser}>
+					Open in my browser
+				</button>
+			</div>
+			<p class="mt-3 text-xs text-neutral-500">
+				Google sign-in only works in your browser. There, press Open in Stream Deck, or download the plugin file and open it, and Orvo installs it.
+				If a plugin won't install by itself, use "{$t("plugin_manager.install_from_file")}".
+			</p>
 		</div>
 	{/if}
 </Popup>

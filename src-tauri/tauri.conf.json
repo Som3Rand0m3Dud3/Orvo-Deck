@@ -9,7 +9,9 @@
 	"bundle": {
 		"active": true,
 		"targets": "all",
-		"resources": { "target/plugins/": "plugins/" },
+		"resources": {
+			"target/plugins/": "plugins/"
+		},
 		"linux": {
 			"deb": {
 				"desktopTemplate": "bundle/opendeck.desktop",
@@ -30,11 +32,25 @@
 		"shortDescription": "Control app for Orvo devices and stream decks",
 		"longDescription": "Orvo Studio is a customizable control app for Orvo macro pads and stream controller devices. Based on OpenDeck by Aman Khanna (nekename).",
 		"category": "Productivity",
-		"icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+		"icon": [
+			"icons/icon.png",
+			"icons/icon.icns",
+			"icons/icon.ico"
+		],
 		"macOS": {
 			"exceptionDomain": "localhost",
 			"signingIdentity": "-"
-		}
+		},
+		"fileAssociations": [
+			{
+				"ext": [
+					"streamDeckPlugin"
+				],
+				"name": "Stream Deck plugin",
+				"description": "Stream Deck plugin",
+				"role": "Viewer"
+			}
+		]
 	},
 	"productName": "Orvo Studio",
 	"mainBinaryName": "orvo-studio",
@@ -42,7 +58,11 @@
 	"plugins": {
 		"deep-link": {
 			"desktop": {
-				"schemes": ["orvo", "openaction", "streamdeck"]
+				"schemes": [
+					"orvo",
+					"openaction",
+					"streamdeck"
+				]
 			}
 		}
 	},
