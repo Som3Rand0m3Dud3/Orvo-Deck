@@ -1,11 +1,11 @@
 pub mod instances;
+pub mod marketplace;
+pub mod pad;
 pub mod plugins;
 pub mod profiles;
 pub mod property_inspector;
 pub mod settings;
 pub mod updates;
-pub mod pad;
-pub mod marketplace;
 
 use crate::shared::{CATEGORIES, Category, DEVICES, DeviceInfo};
 

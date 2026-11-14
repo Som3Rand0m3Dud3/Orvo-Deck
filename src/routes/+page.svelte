@@ -22,6 +22,8 @@
 	import ProfileManager from "../components/ProfileManager.svelte";
 	import PropertyInspectorView from "../components/PropertyInspectorView.svelte";
 	import SettingsView from "../components/SettingsView.svelte";
+	import SoundboardView from "../components/SoundboardView.svelte";
+	import { appView } from "$lib/soundboard";
 
 	let devices: { [id: string]: DeviceInfo } = {};
 	let selectedDevice: string;
@@ -56,12 +58,34 @@
 			{#if !hasDevice}<span class="text-sm text-neutral-400">No device</span>{/if}
 		</div>
 
+		<div role="tablist" aria-label="Pages" class="flex gap-1 p-1 rounded-xl bg-neutral-800 border border-neutral-700">
+			<button
+				role="tab"
+				aria-selected={$appView == "pad"}
+				class="px-4 h-8 rounded-lg text-sm transition-colors {$appView == 'pad'
+					? 'bg-neutral-950 text-neutral-100'
+					: 'text-neutral-300 hover:text-neutral-100'}"
+				on:click={() => appView.set("pad")}>{(hasDevice && devices[selectedDevice]?.name) || "Orvo M1"}</button
+			>
+			<button
+				role="tab"
+				aria-selected={$appView == "soundboard"}
+				class="px-4 h-8 rounded-lg text-sm transition-colors {$appView == 'soundboard'
+					? 'bg-neutral-950 text-neutral-100'
+					: 'text-neutral-300 hover:text-neutral-100'}"
+				on:click={() => appView.set("soundboard")}>Soundboard</button
+			>
+		</div>
+
 		<div class="grow"></div>
 		<PluginManager />
 		<SettingsView />
 	</header>
 
-	<div class="flex flex-row grow min-h-0">
+	{#if $appView == "soundboard"}
+		<SoundboardView />
+	{/if}
+	<div class="flex flex-row grow min-h-0" class:hidden={$appView == "soundboard"}>
 		<div class="relative flex shrink-0 min-h-0" style="width: {leftWidth}px">
 			<aside class="flex flex-col w-full bg-neutral-900 border-r border-neutral-700 min-h-0">
 				<div class="p-3">

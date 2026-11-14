@@ -13,6 +13,7 @@
 	import { PRODUCT_NAME } from "$lib/singletons";
 
 	import { trayScale } from "$lib/tray";
+	import { SOUND_ACTION, appView, soundboard, type SoundAction } from "$lib/soundboard";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { tick } from "svelte";
@@ -31,10 +32,29 @@
 	}
 	reload();
 
+	// Orvo Soundboard: one cube per sound, each the hidden "Play sound" action set to that sound.
+	const SOUNDBOARD = "Soundboard";
+	$: soundAction = Object.values(categories)
+		.flatMap((c) => c.actions)
+		.find((a) => a.uuid == SOUND_ACTION);
+	$: soundCubes = soundAction
+		? ($soundboard?.sounds ?? []).map((s): SoundAction => ({
+				...soundAction!,
+				name: s.name,
+				tooltip: `Plays "${s.name}"`,
+				orvoSound: { id: s.id, name: s.name },
+			}))
+		: [];
+
+	const cubeKey = (action: SoundAction) => action.plugin + action.uuid + (action.orvoSound?.id ?? "");
+
 	let sorted: [string, Category][] = [];
-	$: sorted = Object.entries(categories)
-		.filter(([_, { actions }]) => actions.length > 0)
-		.sort((a, b) => (a[0] == PRODUCT_NAME ? -1 : b[0] == PRODUCT_NAME ? 1 : a[0].localeCompare(b[0])));
+	$: sorted = [
+		...Object.entries(categories)
+			.map(([name, c]): [string, Category] => [name, { ...c, actions: c.actions.filter((a) => a.visible_in_action_list !== false && a.uuid != SOUND_ACTION) }])
+			.filter(([_, { actions }]) => actions.length > 0),
+		...(soundAction ? [[SOUNDBOARD, { icon: soundAction.icon, actions: soundCubes }] as [string, Category]] : []),
+	].sort((a, b) => (a[0] == PRODUCT_NAME ? -1 : b[0] == PRODUCT_NAME ? 1 : a[0] == SOUNDBOARD ? -1 : b[0] == SOUNDBOARD ? 1 : a[0].localeCompare(b[0])));
 
 	const read = (key: string) => {
 		try {
@@ -87,7 +107,7 @@
 			? sorted.flatMap(([name, { actions }]) =>
 					name.toLowerCase().includes(lower) ? actions : actions.filter((action) => nameOf(action).toLowerCase().includes(lower)),
 				)
-			: (categories[selected]?.actions ?? []);
+			: (sorted.find(([name]) => name == selected)?.[1].actions ?? []);
 	}
 
 	function categoryIcon(name: string, category: Category, plugins: any[]): string | null {
@@ -147,7 +167,13 @@
 	let armed: Context | null = null;
 	$: armed = $inspectedInstance && typeof $inspectedInstance == "object" ? $inspectedInstance : null;
 	$: if (armed) setMinimized(false);
-	$: armedLabel = armed ? (armed.controller == "Keypad" ? `Key ${armed.position + 1}` : armed.controller == "Encoder" ? `Slider ${armed.position + 1}` : armed.controller) : "";
+	$: armedLabel = armed
+		? armed.controller == "Keypad"
+			? `Key ${armed.position + 1}`
+			: armed.controller == "Encoder"
+				? `Slider ${armed.position + 1}`
+				: armed.controller
+		: "";
 	const fits = (action: Action, target: Context | null) => !target || action.controllers.includes(target.controller);
 	function pick(action: Action) {
 		if (!armed || !fits(action, armed)) return;
@@ -212,91 +238,118 @@
 
 	{#if !minimized}
 		<div transition:slide={{ duration: 200, easing: cubicOut }}>
-		<div class="flex flex-col gap-2 p-2.5" style={`zoom: ${$trayScale}`}>
-			<div class="flex flex-row items-center gap-2 min-w-0">
-				<div
-					bind:this={tabsEl}
-					class="tray-tabs flex flex-row items-center gap-1.5 grow min-w-0 overflow-x-auto"
-					class:fade-left={fadeLeft}
-					class:fade-right={fadeRight}
-					role="tablist"
-					aria-label="Action categories"
-					on:wheel|nonpassive={tabsWheel}
-					on:scroll={updateFade}
-				>
-					{#each sorted as [name, category] (name)}
-						{@const icon = categoryIcon(name, category, plugins)}
-						{@const on = !query.trim() && name == selected}
-						<button
-							class="flex flex-row items-center gap-2 shrink-0 h-10 px-3.5 rounded-full border text-sm whitespace-nowrap transition-colors {on
-								? 'bg-neutral-800 text-neutral-100'
-								: 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'}"
-							style={on ? "border-color: var(--orvo-accent)" : ""}
-							role="tab"
-							aria-selected={on}
-							on:click={(event) => selectTab(name, event)}
+			<div class="flex flex-col gap-2 p-2.5" style={`zoom: ${$trayScale}`}>
+				<div class="flex flex-row items-center gap-2 min-w-0">
+					<div
+						bind:this={tabsEl}
+						class="tray-tabs flex flex-row items-center gap-1.5 grow min-w-0 overflow-x-auto"
+						class:fade-left={fadeLeft}
+						class:fade-right={fadeRight}
+						role="tablist"
+						aria-label="Action categories"
+						on:wheel|nonpassive={tabsWheel}
+						on:scroll={updateFade}
+					>
+						{#each sorted as [name, category] (name)}
+							{@const icon = categoryIcon(name, category, plugins)}
+							{@const on = !query.trim() && name == selected}
+							<button
+								class="flex flex-row items-center gap-2 shrink-0 h-10 px-3.5 rounded-full border text-sm whitespace-nowrap transition-colors {on
+									? 'bg-neutral-800 text-neutral-100'
+									: 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'}"
+								style={on ? "border-color: var(--orvo-accent)" : ""}
+								role="tab"
+								aria-selected={on}
+								on:click={(event) => selectTab(name, event)}
+							>
+								{#if icon}<img src={icon} alt="" class="w-5 h-5 rounded-xs" />{/if}
+								<span>{name}</span>
+								<span class="text-xs text-neutral-400">{category.actions.length}</span>
+							</button>
+						{/each}
+					</div>
+
+					{#if armed}
+						<span
+							class="shrink-0 h-10 px-3.5 flex items-center rounded-full bg-neutral-800 border text-sm text-neutral-100 whitespace-nowrap"
+							style="border-color: var(--orvo-accent)"
+							title="Click an action below to put it on {armedLabel}"
 						>
-							{#if icon}<img src={icon} alt="" class="w-5 h-5 rounded-xs" />{/if}
-							<span>{name}</span>
-							<span class="text-xs text-neutral-400">{category.actions.length}</span>
-						</button>
-					{/each}
+							Adding to&nbsp;<strong>{armedLabel}</strong>
+						</span>
+					{/if}
+
+					<label
+						class="tray-search flex flex-row items-center shrink-0 h-10 bg-neutral-800 border border-neutral-700 rounded-full overflow-hidden cursor-text"
+						class:open={query != ""}
+						title={$t("action_list.search_placeholder")}
+					>
+						<MagnifyingGlass size="14" class="shrink-0 ml-[12px] mr-1 text-neutral-300" />
+						<input
+							bind:value={query}
+							class="w-full p-1 pr-3 text-sm text-neutral-200 bg-transparent"
+							placeholder={$t("action_list.search_placeholder")}
+							type="search"
+							spellcheck="false"
+						/>
+					</label>
 				</div>
 
-				{#if armed}
-					<span
-						class="shrink-0 h-10 px-3.5 flex items-center rounded-full bg-neutral-800 border text-sm text-neutral-100 whitespace-nowrap"
-						style="border-color: var(--orvo-accent)"
-						title="Click an action below to put it on {armedLabel}"
-					>
-						Adding to&nbsp;<strong>{armedLabel}</strong>
-					</span>
-				{/if}
-
-				<label class="tray-search flex flex-row items-center shrink-0 h-10 bg-neutral-800 border border-neutral-700 rounded-full overflow-hidden cursor-text" class:open={query != ""} title={$t("action_list.search_placeholder")}>
-					<MagnifyingGlass size="14" class="shrink-0 ml-[12px] mr-1 text-neutral-300" />
-					<input bind:value={query} class="w-full p-1 pr-3 text-sm text-neutral-200 bg-transparent" placeholder={$t("action_list.search_placeholder")} type="search" spellcheck="false" />
-				</label>
+				<div class="relative overflow-hidden" style={`height: ${shownHeight / $trayScale}px`}>
+					{#key gridKey}
+						<div
+							class="tray-grid absolute inset-0 grid gap-1.5 overflow-y-auto"
+							role="listbox"
+							aria-label={query.trim() ? "Search results" : selected}
+							in:slideIn
+							out:slideOut
+						>
+							{#each shown as action (cubeKey(action))}
+								<div
+									class="flex flex-col items-center justify-center gap-1.5 h-[86px] px-1 rounded-xl bg-neutral-800 border border-neutral-700 hover:border-neutral-500 transition-colors {armed
+										? fits(action, armed)
+											? 'cursor-pointer'
+											: 'opacity-40 cursor-not-allowed'
+										: 'cursor-grab active:cursor-grabbing'}"
+									draggable="true"
+									title={$localisations?.[action.plugin]?.[action.uuid]?.Tooltip ?? action.tooltip}
+									role="option"
+									aria-selected="false"
+									aria-disabled={!fits(action, armed)}
+									aria-label={nameOf(action)}
+									tabindex="0"
+									on:dragstart={(event) => {
+										if (!event.dataTransfer) return;
+										event.dataTransfer.effectAllowed = "copy";
+										event.dataTransfer.setData("action", JSON.stringify(action));
+									}}
+									on:click={() => pick(action)}
+									on:keydown={(event) => {
+										if ((event.ctrlKey || event.metaKey) && event.key == "c") copiedItem.set({ type: "action", action });
+										else if (event.key == "Enter") pick(action);
+									}}
+								>
+									<img src={actionIcon(action)} alt="" class="w-9 h-9 rounded-lg border border-neutral-700 pointer-events-none" />
+									<span class="tray-name text-xs leading-tight text-center text-neutral-200 pointer-events-none">{nameOf(action)}</span>
+								</div>
+							{:else}
+								{#if selected == SOUNDBOARD && !query.trim()}
+									<div class="col-span-full self-center flex flex-col items-center gap-2 text-sm text-neutral-400">
+										<p>No sounds yet. Add some on the Soundboard page, then put them on keys from here.</p>
+										<button
+											class="px-3 h-8 rounded-lg text-sm font-semibold text-white"
+											style="background: var(--orvo-accent)"
+											on:click={() => appView.set("soundboard")}>Open Soundboard</button
+										>
+									</div>
+								{:else}
+									<p class="col-span-full self-center text-center text-sm text-neutral-400">No actions found.</p>
+								{/if}
+							{/each}
+						</div>
+					{/key}
+				</div>
 			</div>
-
-			<div class="relative overflow-hidden" style={`height: ${shownHeight / $trayScale}px`}>
-			{#key gridKey}
-			<div class="tray-grid absolute inset-0 grid gap-1.5 overflow-y-auto" role="listbox" aria-label={query.trim() ? "Search results" : selected} in:slideIn out:slideOut>
-				{#each shown as action (action.plugin + action.uuid)}
-					<div
-						class="flex flex-col items-center justify-center gap-1.5 h-[86px] px-1 rounded-xl bg-neutral-800 border border-neutral-700 hover:border-neutral-500 transition-colors {armed
-							? fits(action, armed)
-								? 'cursor-pointer'
-								: 'opacity-40 cursor-not-allowed'
-							: 'cursor-grab active:cursor-grabbing'}"
-						draggable="true"
-						title={$localisations?.[action.plugin]?.[action.uuid]?.Tooltip ?? action.tooltip}
-						role="option"
-						aria-selected="false"
-						aria-disabled={!fits(action, armed)}
-						aria-label={nameOf(action)}
-						tabindex="0"
-						on:dragstart={(event) => {
-							if (!event.dataTransfer) return;
-							event.dataTransfer.effectAllowed = "copy";
-							event.dataTransfer.setData("action", JSON.stringify(action));
-						}}
-						on:click={() => pick(action)}
-						on:keydown={(event) => {
-							if ((event.ctrlKey || event.metaKey) && event.key == "c") copiedItem.set({ type: "action", action });
-							else if (event.key == "Enter") pick(action);
-						}}
-					>
-						<img src={actionIcon(action)} alt="" class="w-9 h-9 rounded-lg border border-neutral-700 pointer-events-none" />
-						<span class="tray-name text-xs leading-tight text-center text-neutral-200 pointer-events-none">{nameOf(action)}</span>
-					</div>
-				{:else}
-					<p class="col-span-full self-center text-center text-sm text-neutral-400">No actions found.</p>
-				{/each}
-			</div>
-			{/key}
-			</div>
-		</div>
 		</div>
 	{/if}
 </div>

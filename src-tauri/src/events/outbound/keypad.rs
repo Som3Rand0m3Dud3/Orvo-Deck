@@ -47,6 +47,7 @@ pub async fn key_down(device: &str, key: u8) -> Result<(), anyhow::Error> {
 		drop(locks);
 
 		for (i, child) in children.iter().enumerate() {
+			crate::soundboard::on_key_down(&child.action.uuid, &child.settings);
 			send_to_plugin(
 				&child.action.plugin,
 				&KeyEvent {
@@ -102,6 +103,7 @@ pub async fn key_down(device: &str, key: u8) -> Result<(), anyhow::Error> {
 			return Ok(());
 		}
 		let child = &children[instance.current_state as usize];
+		crate::soundboard::on_key_down(&child.action.uuid, &child.settings);
 		send_to_plugin(
 			&child.action.plugin,
 			&KeyEvent {
@@ -114,6 +116,7 @@ pub async fn key_down(device: &str, key: u8) -> Result<(), anyhow::Error> {
 		)
 		.await?;
 	} else {
+		crate::soundboard::on_key_down(&instance.action.uuid, &instance.settings);
 		send_to_plugin(
 			&instance.action.plugin,
 			&KeyEvent {

@@ -14,6 +14,7 @@
 	import { onDestroy, tick } from "svelte";
 
 	import { invoke } from "@tauri-apps/api/core";
+	import { finishSoundKey, plainAction, type SoundAction } from "$lib/soundboard";
 
 	export let device: DeviceInfo;
 	export let profile: Profile;
@@ -38,11 +39,11 @@
 		let context = { device: device.id, profile: profile.id, controller, position };
 		let array = controller == "Encoder" ? profile.sliders : controller == "Infobar" ? profile.infobars : profile.keys;
 		if (dataTransfer?.getData("action")) {
-			let action = JSON.parse(dataTransfer?.getData("action"));
+			let action: SoundAction = JSON.parse(dataTransfer?.getData("action"));
 			if (array[position]) {
 				return;
 			}
-			array[position] = await invoke("create_instance", { context, action });
+			array[position] = await finishSoundKey(await invoke("create_instance", { context, action: plainAction(action) }), action);
 			profile = profile;
 		} else if (dataTransfer?.getData("controller")) {
 			let oldController = dataTransfer?.getData("controller");
@@ -66,7 +67,7 @@
 
 		if (item.type == "action") {
 			if (array[destination.position]) return;
-			array[destination.position] = await invoke("create_instance", { context: destination, action: item.action });
+			array[destination.position] = await finishSoundKey(await invoke("create_instance", { context: destination, action: plainAction(item.action) }), item.action);
 			profile = profile;
 			return;
 		}

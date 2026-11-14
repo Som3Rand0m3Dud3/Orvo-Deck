@@ -101,7 +101,11 @@ struct SliderOverlay {
 
 impl Default for SliderOverlay {
 	fn default() -> Self {
-		Self { locked: true, global: None, stash: HashMap::new() }
+		Self {
+			locked: true,
+			global: None,
+			stash: HashMap::new(),
+		}
 	}
 }
 
@@ -191,7 +195,12 @@ async fn apply_slider(device: &str, ov: &mut SliderOverlay, unlocking: bool) -> 
 
 async fn slot_of(device: &str, profile: &str) -> Result<Option<ActionInstance>, anyhow::Error> {
 	let locks = crate::store::profiles::acquire_locks().await;
-	let ctx = crate::shared::Context { device: device.to_owned(), profile: profile.to_owned(), controller: "Encoder".into(), position: 0 };
+	let ctx = crate::shared::Context {
+		device: device.to_owned(),
+		profile: profile.to_owned(),
+		controller: "Encoder".into(),
+		position: 0,
+	};
 	Ok(crate::store::profiles::get_slot(&ctx, &locks).await?.clone())
 }
 

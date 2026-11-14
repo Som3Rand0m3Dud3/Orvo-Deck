@@ -289,6 +289,10 @@ func handleActionEvent(msg []byte) {
 	if json.Unmarshal(msg, &ev) != nil || !strings.HasPrefix(ev.Action, "com.ninedeck.device.") {
 		return
 	}
+	// Soundboard keys are played by Orvo Studio itself; they are not slider actions.
+	if ev.Action == "com.ninedeck.device.sound" {
+		return
+	}
 	switch ev.Event {
 	case "willAppear", "didReceiveSettings":
 		a := &sliderAction{action: ev.Action, context: ev.Context, settings: ev.Payload.Settings}

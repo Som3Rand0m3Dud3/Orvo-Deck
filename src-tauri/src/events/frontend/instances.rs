@@ -247,6 +247,19 @@ pub async fn set_state(context: ActionContext, index: u16, state: ActionState) -
 	Ok(())
 }
 
+/// Orvo: settings chosen by Orvo itself (e.g. which soundboard sound a key plays).
+#[command]
+pub async fn orvo_set_instance_settings(context: ActionContext, settings: serde_json::Value) -> Result<ActionInstance, Error> {
+	let mut locks = acquire_locks_mut().await;
+	let Some(reference) = get_instance_mut(&context, &mut locks).await? else {
+		return Err(anyhow::anyhow!("no action on that key").into());
+	};
+	reference.settings = settings;
+	let clone = reference.clone();
+	save_profile_now(&context.device, &mut locks).await?;
+	Ok(clone)
+}
+
 #[command]
 pub async fn set_child_delay(parent_context: ActionContext, index: usize, delay_ms: u64) -> Result<serde_json::Value, Error> {
 	let mut locks = acquire_locks_mut().await;

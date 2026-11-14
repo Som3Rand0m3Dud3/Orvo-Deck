@@ -1,8 +1,8 @@
 {
-	"Name": "NineDeck",
-	"Description": "Device support for the NineDeck macro pad",
+	"Name": "Orvo M1",
+	"Description": "Device support for the Orvo M1 macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.4.0",
+	"Version": "0.5.0",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",
@@ -71,6 +71,23 @@
 			],
 			"SupportedInMultiActions": false,
 			"PropertyInspectorPath": "assets/pi/audiodevice.html"
+		},
+		{
+			"Name": "Play sound",
+			"UUID": "com.ninedeck.device.sound",
+			"Icon": "assets/sound",
+			"Tooltip": "Plays a sound from Orvo's Soundboard into your virtual mic and headphones",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "assets/sound",
+					"Title": ""
+				}
+			],
+			"SupportedInMultiActions": true,
+			"VisibleInActionsList": false
 		}
 	],
 	"DeviceNamespace": "nd",

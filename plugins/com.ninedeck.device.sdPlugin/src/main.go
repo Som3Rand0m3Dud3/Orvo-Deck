@@ -110,7 +110,7 @@ func main() {
 	if lf, err := os.OpenFile(filepath.Join(exeDir(), "plugin.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
 		log.SetOutput(lf)
 	}
-	log.Println("NineDeck plugin starting")
+	log.Println("Orvo M1 plugin starting")
 
 	var err error
 	ws, _, err = websocket.DefaultDialer.Dial("ws://localhost:"+*port, nil)
@@ -326,7 +326,7 @@ func tryOpen(portName, serialNo string) {
 	send(map[string]any{
 		"event": "registerDevice",
 		"payload": map[string]any{
-			"id": p.id, "name": "NineDeck", "rows": rows, "columns": cols, "encoders": sliderCount(p), "type": 0,
+			"id": p.id, "name": "Orvo M1", "rows": rows, "columns": cols, "encoders": sliderCount(p), "type": 0,
 		},
 	})
 	log.Println("registered", p.id, "on", portName, "firmware", fw)
@@ -856,7 +856,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.9.4"
+const latestFirmware = "0.9.5"
 
 var (
 	updMu    sync.Mutex
@@ -882,7 +882,7 @@ func newer(a, b string) bool { // is version a newer than b?
 
 func sendStatus(device, fw, state, message string) {
 	send(map[string]any{"event": "orvoPadStatus", "payload": map[string]any{
-		"device": device, "name": "NineDeck", "firmware": fw, "latest": latestFirmware,
+		"device": device, "name": "Orvo M1", "firmware": fw, "latest": latestFirmware,
 		"updateAvailable": fw != "" && newer(latestFirmware, fw), "state": state, "message": message,
 	}})
 }

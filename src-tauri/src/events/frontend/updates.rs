@@ -28,7 +28,9 @@ pub struct Release {
 }
 
 fn installer_for_this_os(assets: &[serde_json::Value]) -> Option<String> {
-	let names_urls = assets.iter().filter_map(|a| Some((a.get("name")?.as_str()?.to_lowercase(), a.get("browser_download_url")?.as_str()?.to_owned())));
+	let names_urls = assets
+		.iter()
+		.filter_map(|a| Some((a.get("name")?.as_str()?.to_lowercase(), a.get("browser_download_url")?.as_str()?.to_owned())));
 	let pick = |ok: &dyn Fn(&str) -> bool| names_urls.clone().find(|(n, _)| ok(n)).map(|(_, u)| u);
 	if cfg!(windows) {
 		pick(&|n| n.ends_with("-setup.exe")).or_else(|| pick(&|n| n.ends_with(".msi")))

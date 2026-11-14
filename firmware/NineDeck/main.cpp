@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// NineDeck test-jig firmware v0.9 — the screen shows the same pictures as Orvo Studio's 9 boxes.
+// Orvo M1 (formerly NineDeck) test-jig firmware v0.9 — the screen shows the same pictures as Orvo Studio's 9 boxes.
 // Board: Raspberry Pi Pico (RP2040), arduino-pico core (Earle Philhower)
 // Keys: GP0-GP8 = Key1-9, GP9 = Page Left, GP10 = Page Right (each key to GND, internal pull-ups)
 // Display: 1.47" 172x320 ST7789 on SPI0: SCL GP18, SDA GP19, CS GP17, DC GP16, RES GP20, BLK GP21
@@ -40,7 +40,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.9.4"
+#define FW_VERSION "0.9.5"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -333,9 +333,9 @@ void splash() {
   frame.setTextColor(C_TEXT);
   frame.setTextSize(4);
   int16_t x1, y1; uint16_t w, h;
-  frame.getTextBounds("NineDeck", 0, 0, &x1, &y1, &w, &h);
+  frame.getTextBounds("Orvo M1", 0, 0, &x1, &y1, &w, &h);
   frame.setCursor((SW - w) / 2, 52);
-  frame.print("NineDeck");
+  frame.print("Orvo M1");
   frame.fillRoundRect((SW - 120) / 2, 104, 120, 4, 2, C_ACCENT);
   frame.setTextSize(1);
   frame.setTextColor(C_DIM);

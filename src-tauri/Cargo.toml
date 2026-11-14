@@ -1,6 +1,6 @@
 [package]
 name = "opendeck"
-version = "0.5.2"
+version = "0.6.0"
 description = "Use stream controllers"
 authors = ["Aman Khanna (nekename)"]
 license = "GPL-3.0-or-later"
@@ -47,6 +47,9 @@ urlencoding = "2.1"
 base64 = "0.22"
 reqwest = { version = "0.13", features = ["json"] }
 sha2 = "0.10"
+cpal = "0.16"
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
+ringbuf = "0.4"
 zip = { version = "6.0", default-features = false, features = ["deflate", "zstd"] }
 active-win-pos-rs = "0.10"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }

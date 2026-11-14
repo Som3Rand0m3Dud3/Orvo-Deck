@@ -9,6 +9,7 @@ mod events;
 mod plugins;
 mod power_events;
 mod shared;
+mod soundboard;
 mod store;
 mod zip_extract;
 
@@ -176,9 +177,23 @@ async fn main() {
 			frontend::pad::orvo_slider_refresh,
 			frontend::pad::orvo_slider_lock,
 			frontend::pad::orvo_take_update_marker,
+			frontend::instances::orvo_set_instance_settings,
+			soundboard::sb_state,
+			soundboard::sb_add_files,
+			soundboard::sb_add_bytes,
+			soundboard::sb_update,
+			soundboard::sb_reorder,
+			soundboard::sb_remove,
+			soundboard::sb_play,
+			soundboard::sb_playing,
+			soundboard::sb_stop_all,
+			soundboard::sb_set_config,
+			soundboard::sb_refresh,
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();
+			// Orvo Soundboard: reopen the virtual mic if it was set up before.
+			std::thread::spawn(soundboard::init);
 
 			if !std::env::args().any(|v| v == "--hide") {
 				restore_window_state(app.handle());
@@ -219,7 +234,10 @@ async fn main() {
 				let (title, message) = if first_run {
 					(
 						format!("Welcome to {PRODUCT_NAME}"),
-						format!("Thanks for installing {PRODUCT_NAME} v{}!\nIf you used OpenDeck before, your profiles and plugins were brought over.", built_info::PKG_VERSION),
+						format!(
+							"Thanks for installing {PRODUCT_NAME} v{}!\nIf you used OpenDeck before, your profiles and plugins were brought over.",
+							built_info::PKG_VERSION
+						),
 					)
 				} else {
 					(
