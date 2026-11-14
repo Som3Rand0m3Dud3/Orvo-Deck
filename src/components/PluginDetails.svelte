@@ -15,7 +15,7 @@
 	import { onMount, tick } from "svelte";
 
 	export let id: string;
-	export let details: { repository: string; name: string; author: string; download_url: string | undefined; flags?: { ai_assisted?: boolean } };
+	export let details: { repository: string; name: string; author: string; download_url: string | undefined; flags?: { ai_assisted?: boolean }; icon?: string };
 	let readme = `<strong>${$t("plugin_details.loading")}</strong>`;
 	let downloadCount = 0;
 
@@ -114,7 +114,7 @@
 		</div>
 	</svelte:fragment>
 	<div class="flex flex-row items-start">
-		<img src={"https://openactionapi.github.io/plugins/icons/" + id + ".png"} alt={details.name} class="size-48 rounded-2xl" />
+		<img src={details.icon ?? "https://openactionapi.github.io/plugins/icons/" + id + ".png"} alt={details.name} class="size-48 rounded-2xl" />
 		<div class="flex flex-col justify-center h-48 ml-8">
 			<div class="text-3xl text-neutral-200">{details.name}</div>
 			<div class="flex items-center mt-2 text-lg text-neutral-400">

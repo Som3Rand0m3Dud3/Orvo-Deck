@@ -6,9 +6,6 @@
 	import Gear from "phosphor-svelte/lib/Gear";
 	import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
 	import Robot from "phosphor-svelte/lib/Robot";
-	import SignOut from "phosphor-svelte/lib/SignOut";
-	import Storefront from "phosphor-svelte/lib/Storefront";
-	import UserCircle from "phosphor-svelte/lib/UserCircle";
 	import Trash from "phosphor-svelte/lib/Trash";
 	import WarningCircle from "phosphor-svelte/lib/WarningCircle";
 	import ListedPlugin from "./ListedPlugin.svelte";
@@ -24,8 +21,7 @@
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
 	import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
-	import { ask, message, openDialog } from "$lib/dialog";
-	import { onDestroy, tick } from "svelte";
+	import { ask, message } from "$lib/dialog";
 	import { open } from "@tauri-apps/plugin-dialog";
 
 	// @ts-expect-error
@@ -87,9 +83,9 @@
 		author: string;
 		repository: string;
 		download_url: string | undefined;
-		flags?: {
-			ai_assisted?: boolean;
-		};
+		flags?: { ai_assisted?: boolean };
+		icon?: string;
+		version?: string;
 	};
 	async function installPluginGitHub(id: string, plugin: GitHubPlugin) {
 		if (plugin.download_url) {
@@ -163,7 +159,11 @@
 	async function isUpdateAvailable(plugin: any): Promise<string | false> {
 		const id = plugin.id.endsWith(".sdPlugin") ? plugin.id.slice(0, -9) : plugin.id;
 		const cataloguePlugin = plugins[id];
-		if (!cataloguePlugin || cataloguePlugin.download_url) return false;
+		if (!cataloguePlugin) return false;
+		const normalize = (v: string) => String(v).replace(/^v/, "").replace(/^(\d+\.\d+\.\d+)\.\d+$/, "$1");
+		// Orvo's catalogue already knows the newest version: no GitHub request needed.
+		if (cataloguePlugin.version) return normalize(cataloguePlugin.version) != normalize(plugin.version) ? cataloguePlugin.version.replace(/^v/, "") : false;
+		if (cataloguePlugin.download_url) return false;
 
 		try {
 			const endpoint = new URL(cataloguePlugin.repository);
@@ -189,26 +189,62 @@
 	let installed: any[] = [];
 	(async () => (installed = await invoke("list_plugins")))();
 
-	let plugins: { [id: string]: GitHubPlugin };
-	(async () => (plugins = await (await fetch("https://openactionapi.github.io/plugins/catalogue.json")).json()))();
+	let plugins: { [id: string]: GitHubPlugin } = {};
 
-	// Orvo: Elgato Marketplace. It opens in its own window; Orvo installs what you get there.
-	type ElgatoAccount = { signed_in: boolean; name: string; email: string };
-	let elgato: ElgatoAccount = { signed_in: false, name: "", email: "" };
-	try {
-		elgato = { ...elgato, ...JSON.parse(localStorage.getItem("orvo-elgato-account") ?? "{}") };
-	} catch {}
-	let accountMenu = false;
-	$: elgatoLabel = elgato.name || elgato.email || "Elgato account";
-	listen("elgato_account", ({ payload }: { payload: ElgatoAccount }) => {
-		elgato = payload;
+	// Orvo: the plugin store reads Orvo's own daily catalogue (scripts/catalogue/build.py), which merges
+	// OpenDeck's catalogue, the community plugin list, GitHub, BarRaider and the old Elgato store
+	// archive, and records which systems each plugin really supports.
+	const CATALOGUE_URL = "https://raw.githubusercontent.com/Som3Rand0m3Dud3/Orvo-Deck/catalogue/plugins.json";
+	type Platform = "windows" | "mac" | "linux";
+	type StoreEntry = {
+		id: string;
+		name: string;
+		author?: string;
+		description?: string;
+		source: "open-source" | "archive";
+		repository?: string;
+		download_url?: string;
+		version?: string;
+		updated?: string;
+		platforms?: Platform[];
+		platforms_known?: boolean;
+		icon?: string;
+		flags?: { ai_assisted?: boolean };
+	};
+	let catalogue: StoreEntry[] | null = null;
+	let catalogueFailed = false;
+	(async () => {
 		try {
-			localStorage.setItem("orvo-elgato-account", JSON.stringify(payload));
-		} catch {}
-	});
+			const data = await (await fetch(CATALOGUE_URL)).json();
+			catalogue = data.plugins as StoreEntry[];
+		} catch {
+			// Fall back to OpenDeck's catalogue so the store is never empty.
+			try {
+				const oa: { [id: string]: GitHubPlugin & { description?: string } } = await (await fetch("https://openactionapi.github.io/plugins/catalogue.json")).json();
+				catalogue = Object.entries(oa).map(([id, p]) => ({
+					id,
+					name: p.name,
+					author: p.author,
+					description: p.description,
+					source: "open-source",
+					repository: p.repository,
+					download_url: p.download_url,
+					icon: `https://openactionapi.github.io/plugins/icons/${id}.png`,
+					flags: p.flags,
+				}));
+			} catch {
+				catalogueFailed = true;
+				catalogue = [];
+			}
+		}
+		plugins = Object.fromEntries(
+			catalogue.filter((e) => e.source != "archive").map((e) => [e.id, { name: e.name, author: e.author ?? "", repository: e.repository ?? "", download_url: e.download_url, flags: e.flags, icon: e.icon, version: e.version }]),
+		);
+	})();
+
+	// Opening a plugin file (or Orvo started that way) installs it.
 	listen("elgato_install", ({ payload }: { payload: { name: string; url: string | null; file: string | null } }) => {
 		showPopup = true;
-		storeTab = "elgato";
 		installPlugin(payload.name, payload.url, payload.file, null, false);
 	});
 	(async () => {
@@ -219,79 +255,47 @@
 		}
 	})();
 	listen("elgato_notice", ({ payload }: { payload: unknown }) => {
-		const text = typeof payload == "string" ? payload : "";
-		message(text && !text.startsWith("streamdeck://") ? text : `Orvo couldn't install this plugin by itself. Use Download on its Marketplace page, or "Install from file".${text ? `\n\nLink received: ${text}` : ""}`, {
-			title: "Elgato Marketplace",
-			buttons: { ok: $t("dialog.ok") },
-		});
+		message(typeof payload == "string" ? payload : "Orvo couldn't install this plugin.", { title: "Plugins", buttons: { ok: $t("dialog.ok") } });
 	});
-	function openMarketplace() {
-		accountMenu = false;
-		showPopup = true;
-		storeTab = "elgato";
-	}
 
-	// The Marketplace is a separate web view laid over the Elgato tab's area. It is hidden whenever
-	// something of Orvo's must show on top (messages, menus, details), since it would cover them.
-	let mpEl: HTMLDivElement | null = null;
-	let mpHeight = 520;
-	let mpShown = false;
-	let mpRect = "";
-	let mpFrame = 0;
-	$: wantMarketplace = showPopup && storeTab == "elgato" && !$openDialog && !accountMenu && !openDetailsView && !choices;
-	function placeMarketplace() {
-		cancelAnimationFrame(mpFrame);
-		mpFrame = requestAnimationFrame(async () => {
-			if (!wantMarketplace || !mpEl) {
-				if (mpShown) {
-					mpShown = false;
-					mpRect = "";
-					invoke("orvo_marketplace_hide").catch(() => {});
-				}
-				return;
-			}
-			const height = Math.max(240, Math.floor(window.innerHeight - mpEl.getBoundingClientRect().top - 28));
-			if (Math.abs(height - mpHeight) > 1) {
-				mpHeight = height;
-				await tick();
-			}
-			const r = mpEl.getBoundingClientRect();
-			const key = [r.left, r.top, r.width, r.height].map(Math.round).join(",");
-			if (mpShown && key == mpRect) return;
-			mpShown = true;
-			mpRect = key;
-			invoke("orvo_marketplace_show", { x: r.left, y: r.top, width: r.width, height: r.height }).catch((error) => console.error(error));
-		});
-	}
-	$: wantMarketplace, mpEl, placeMarketplace();
-	function watchSize(node: HTMLElement) {
-		const observer = new ResizeObserver(() => placeMarketplace());
-		observer.observe(node);
-		return { destroy: () => observer.disconnect() };
-	}
-	onDestroy(() => invoke("orvo_marketplace_hide").catch(() => {}));
-	const MARKETPLACE = "https://marketplace.elgato.com/stream-deck/plugins";
-	async function openInBrowser() {
-		accountMenu = false;
-		await invoke("open_url", { url: MARKETPLACE });
-	}
-	async function signOutElgato() {
-		accountMenu = false;
-		try {
-			await invoke("orvo_marketplace_sign_out");
-		} catch (error: any) {
-			message(String(error), { title: "Elgato Marketplace", buttons: { ok: $t("dialog.ok") } });
-		}
-	}
-
-	// Orvo: the store has tabs. "All" shows (and searches) every kind; Elgato is coming later.
-	type StoreTab = "all" | "open" | "elgato";
+	// Tabs, and which system's plugins to show (this PC's by default).
+	type StoreTab = "all" | "orvo" | "open" | "archive";
 	let storeTab: StoreTab = "all";
 	const STORE_TABS: [StoreTab, string][] = [
 		["all", "All"],
+		["orvo", "Orvo"],
 		["open", "Open-source"],
-		["elgato", "Elgato"],
+		["archive", "Elgato archive"],
 	];
+	type OsFilter = Platform | "any";
+	const thisOs: Platform = /Win/i.test(navigator.userAgent) ? "windows" : /Mac/i.test(navigator.userAgent) ? "mac" : "linux";
+	let osFilter: OsFilter = thisOs;
+	try {
+		const saved = localStorage.getItem("orvo-store-os");
+		if (saved == "windows" || saved == "mac" || saved == "linux" || saved == "any") osFilter = saved;
+	} catch {}
+	$: try {
+		localStorage.setItem("orvo-store-os", osFilter);
+	} catch {}
+	const OS_CHOICES: OsFilter[] = ["windows", "mac", "linux", "any"];
+	const OS_LABEL: { [k in OsFilter]: string } = { windows: "Windows", mac: "macOS", linux: "Linux", any: "Any system" };
+
+	const fits = (e: StoreEntry, os: OsFilter) => os == "any" || !e.platforms_known || !e.platforms || e.platforms.includes(os);
+	const matches = (e: StoreEntry, q: string) =>
+		!q || e.name?.toLowerCase().includes(q) || e.author?.toLowerCase().includes(q) || e.description?.toLowerCase().includes(q) || e.id.toLowerCase().includes(q);
+	$: lowerQuery = query.toLowerCase().trim();
+	$: shownEntries = (catalogue ?? []).filter(
+		(e) => (storeTab == "all" || (storeTab == "open" ? e.source == "open-source" : storeTab == "archive" ? e.source == "archive" : false)) && fits(e, osFilter) && matches(e, lowerQuery),
+	);
+	$: countFor = (tab: StoreTab) =>
+		tab == "orvo"
+			? installed.filter((p) => p.builtin).length
+			: (catalogue ?? []).filter((e) => (tab == "all" || (tab == "open" ? e.source == "open-source" : e.source == "archive")) && fits(e, osFilter)).length;
+
+	function openEntry(e: StoreEntry) {
+		if (e.source == "archive") installPlugin(e.name, e.download_url ?? null, null, e.id);
+		else openDetailsView = e.id;
+	}
 
 	let availableUpdates: { [id: string]: string | false } = {};
 	let checkedPlugins = new Set<string>();
@@ -332,7 +336,6 @@
 </button>
 
 <svelte:window
-	on:resize={placeMarketplace}
 	on:keydown={(event) => {
 		if (event.key == "Escape") {
 			if (choices) cancelChoice();
@@ -346,47 +349,10 @@
 	<svelte:fragment slot="header">
 		<div class="flex flex-row items-center gap-2">
 			<h2 class="m-2 grow font-semibold text-xl text-neutral-300">{$t("plugin_manager.title")}</h2>
-			<div class="relative">
-				{#if elgato.signed_in}
-					<button
-						class="flex items-center gap-2 h-9 px-3 rounded-full bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600 transition-colors"
-						aria-haspopup="menu"
-						aria-expanded={accountMenu}
-						title="Signed in to the Elgato Marketplace"
-						on:click={() => (accountMenu = !accountMenu)}
-					>
-						<UserCircle size="18" />
-						<span class="max-w-48 truncate">{elgatoLabel}</span>
-					</button>
-					{#if accountMenu}
-						<div role="menu" class="absolute right-0 top-11 z-40 w-56 p-1 rounded-lg bg-neutral-700 border border-neutral-600 shadow-lg">
-							{#if elgato.email && elgato.name}<p class="px-3 py-2 text-xs text-neutral-400 truncate">{elgato.email}</p>{/if}
-							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openMarketplace}>
-								<Storefront size="16" />Go to the Marketplace
-							</button>
-							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openInBrowser}>
-								<ArrowSquareOut size="16" />Open in my browser
-							</button>
-							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={signOutElgato}>
-								<SignOut size="16" />Sign out
-							</button>
-						</div>
-					{/if}
-				{:else}
-					<button
-						class="flex items-center gap-2 h-9 px-3 rounded-full bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600 transition-colors"
-						title="Sign in inside the Elgato tab"
-						on:click={openMarketplace}
-					>
-						<UserCircle size="18" />Not signed in
-					</button>
-				{/if}
-			</div>
 			<button class="mr-2 my-1 text-xl text-neutral-300" on:click={() => (showPopup = false)} aria-label={$t("settings.close")}>✕</button>
 		</div>
 	</svelte:fragment>
 
-	{#if storeTab != "elgato"}
 	<h2 class="mx-2 mt-4 mb-2 text-lg text-neutral-400">{$t("plugin_manager.installed")}</h2>
 	<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
 		<!-- prettier-ignore -->
@@ -441,18 +407,9 @@
 		{/each}
 	</div>
 
-	{/if}
 
-	<div class="flex flex-row items-center gap-2 mx-2 mt-6 mb-2" class:mt-2={storeTab == "elgato"}>
+	<div class="flex flex-row items-center gap-2 mx-2 mt-6 mb-2">
 		<h2 class="grow text-lg text-neutral-400">{$t("plugin_manager.store")}</h2>
-		<button
-			class="flex flex-row items-center mt-2 px-1 py-0.5 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
-			title="Google sign-in works there. Press Open in Stream Deck, or download the plugin and open the file, and Orvo installs it."
-			on:click={openInBrowser}
-		>
-			<ArrowSquareOut />
-			<span class="ml-1">Open in my browser</span>
-		</button>
 		<button
 			class="flex flex-row items-center mt-2 px-1 py-0.5 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
 			on:click={installPluginFile}
@@ -462,83 +419,101 @@
 		</button>
 	</div>
 
-	<div role="tablist" aria-label="Plugin types" class="flex gap-1 mx-2 mt-2 p-1 rounded-xl bg-neutral-700 w-fit">
-		{#each STORE_TABS as [id, label]}
-			<button
-				role="tab"
-				aria-selected={storeTab == id}
-				class="px-4 h-9 rounded-lg text-sm transition-colors {storeTab == id ? 'bg-neutral-900 text-neutral-100' : 'text-neutral-300 hover:text-neutral-100'}"
-				on:click={() => (storeTab = id)}>{label}</button
-			>
-		{/each}
-	</div>
-
-	{#if storeTab != "elgato"}
-	<div class="flex flex-row items-center m-2 bg-neutral-700 border border-neutral-600 rounded-lg">
-		<MagnifyingGlass size="14" class="ml-3 mr-0.5 text-neutral-300" />
-		<input
-			bind:value={query}
-			class="w-full p-2 text-neutral-300"
-			placeholder={$t("plugin_manager.search")}
-			aria-label={$t("plugin_manager.search")}
-			type="search"
-			spellcheck="false"
-		/>
-	</div>
-
-	<div class="flex flex-row items-center mx-2 my-4 p-3 space-x-2 bg-yellow-900/20 border-l-4 border-yellow-500 rounded">
-		<WarningCircle size="20" class="mt-0.5 text-yellow-500" />
-		<div class="text-sm text-yellow-200">
-			{$t("plugin_manager.warning", { PRODUCT_NAME })}
+	<div class="flex flex-row flex-wrap items-center gap-3 mx-2 mt-2">
+		<div role="tablist" aria-label="Plugin types" class="flex gap-1 p-1 rounded-xl bg-neutral-700 w-fit">
+			{#each STORE_TABS as [id, label]}
+				<button
+					role="tab"
+					aria-selected={storeTab == id}
+					class="flex items-center gap-1.5 px-4 h-9 rounded-lg text-sm transition-colors {storeTab == id ? 'bg-neutral-900 text-neutral-100' : 'text-neutral-300 hover:text-neutral-100'}"
+					on:click={() => (storeTab = id)}
+					>{label}{#if catalogue}<span class="text-xs text-neutral-400">{countFor(id)}</span>{/if}</button
+				>
+			{/each}
+		</div>
+		<div class="grow"></div>
+		<div role="group" aria-label="Show plugins for" class="flex items-center gap-1">
+			<span class="mr-1 text-sm text-neutral-400">Works on</span>
+			{#each OS_CHOICES as os}
+				<button
+					class="h-8 px-3 rounded-full border text-sm transition-colors {osFilter == os ? 'text-neutral-100 bg-neutral-900' : 'text-neutral-300 border-neutral-600 hover:text-neutral-100'}"
+					style={osFilter == os ? "border-color: var(--orvo-accent)" : ""}
+					aria-pressed={osFilter == os}
+					on:click={() => (osFilter = os)}>{OS_LABEL[os]}</button
+				>
+			{/each}
 		</div>
 	</div>
 
+	{#if storeTab != "orvo"}
+		<div class="flex flex-row items-center m-2 bg-neutral-700 border border-neutral-600 rounded-lg">
+			<MagnifyingGlass size="14" class="ml-3 mr-0.5 text-neutral-300" />
+			<input
+				bind:value={query}
+				class="w-full p-2 text-neutral-300"
+				placeholder={$t("plugin_manager.search")}
+				aria-label={$t("plugin_manager.search")}
+				type="search"
+				spellcheck="false"
+			/>
+		</div>
+
+		<div class="flex flex-row items-center mx-2 my-3 p-3 space-x-2 bg-yellow-900/20 border-l-4 border-yellow-500 rounded">
+			<WarningCircle size="20" class="mt-0.5 text-yellow-500" />
+			<div class="text-sm text-yellow-200">
+				{$t("plugin_manager.warning", { PRODUCT_NAME })}
+				{#if storeTab == "archive"}Archived plugins are old copies from Elgato's former store and may no longer work.{/if}
+			</div>
+		</div>
 	{/if}
 
-	{#if storeTab != "elgato"}
-		{#if !plugins}
-			<h2 class="mx-2 mt-6 mb-2 text-md text-neutral-400">{$t("plugin_manager.loading.open_source")}</h2>
-		{:else}
-			<div class="flex flex-row items-center ml-2 mt-6 mb-2 space-x-2">
-				<h2 class="font-semibold text-md text-neutral-400">{$t("plugin_manager.open_source")}</h2>
-				<Tooltip>{$t("plugin_manager.open_source.tooltip")}</Tooltip>
-			</div>
-			<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-				{#each Object.entries(plugins) as [id, plugin]}
-					<ListedPlugin
-						icon="https://openactionapi.github.io/plugins/icons/{id}.png"
-						name={plugin.name}
-						subtitle={plugin.author}
-						hidden={!plugin.name.toLowerCase().includes(query.toLowerCase())}
-						action={() => (openDetailsView = id)}
-						actionLabel={$t("plugin_manager.view_details")}
-					>
-						<svelte:fragment slot="subtitle">
-							<span>
-								{plugin.author}
-								{#if plugin.flags?.ai_assisted}
-									<Robot size="1em" class="inline align-text-bottom text-yellow-500" />
-								{/if}
-							</span>
-						</svelte:fragment>
-
-						<ArrowSquareOut size="24" class="text-neutral-400" />
-					</ListedPlugin>
-				{/each}
-			</div>
-		{/if}
-	{:else}
-		<div class="flex flex-row items-center gap-2 mx-2 mt-3 mb-2">
-			<button class="flex items-center justify-center w-9 h-9 rounded-lg bg-neutral-700 border border-neutral-600 text-neutral-200 hover:bg-neutral-600" aria-label="Back" title="Back" on:click={() => invoke("orvo_marketplace_back")}>←</button>
-			<button class="flex items-center gap-1.5 h-9 px-3 rounded-lg bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600" on:click={() => invoke("orvo_marketplace_home")}>
-				<Storefront size="16" />Plugins
-			</button>
-			<p class="ml-2 text-xs text-neutral-400">
-				Sign in inside the Marketplace (email, Discord or Twitch). Press <strong>Open in Stream Deck</strong> or <strong>Download</strong>, and Orvo installs it. Google sign-in: "Open in my browser".
-			</p>
+	{#if storeTab == "orvo"}
+		<p class="mx-2 mt-4 mb-2 text-sm text-neutral-400">Plugins made by Orvo. More are on the way.</p>
+		<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+			{#each installed.filter((p) => p.builtin) as plugin (plugin.id)}
+				<ListedPlugin icon={getWebserverUrl(plugin.icon)} name={plugin.name} subtitle={`Installed · ${plugin.version}`} action={() => {}} actionLabel="Installed">
+					<span class="text-xs text-emerald-400">Installed</span>
+				</ListedPlugin>
+			{/each}
 		</div>
-		<div bind:this={mpEl} use:watchSize class="mx-2 rounded-xl border border-neutral-600 bg-neutral-900 flex items-center justify-center text-sm text-neutral-500" style={`height: ${mpHeight}px`}>
-			Loading the Elgato Marketplace…
+	{:else if !catalogue}
+		<h2 class="mx-2 mt-6 mb-2 text-md text-neutral-400">{$t("plugin_manager.loading.open_source")}</h2>
+	{:else}
+		{#if catalogueFailed}
+			<p class="mx-2 mt-4 text-sm text-neutral-400">The plugin list couldn't be loaded. Check your internet connection and open Plugins again.</p>
+		{:else if shownEntries.length == 0}
+			<p class="mx-2 mt-4 text-sm text-neutral-400">No plugins found{osFilter != "any" ? ` for ${OS_LABEL[osFilter]}` : ""}.</p>
+		{/if}
+		<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+			{#each shownEntries as entry (entry.source + entry.id)}
+				<ListedPlugin
+					icon={entry.icon ?? ""}
+					name={entry.name}
+					subtitle={entry.author ?? ""}
+					action={() => openEntry(entry)}
+					actionLabel={entry.source == "archive" ? $t("plugin_details.install") : $t("plugin_manager.view_details")}
+				>
+					<svelte:fragment slot="subtitle">
+						<span class="flex flex-wrap items-center gap-1">
+							<span>{entry.author ?? ""}</span>
+							{#if entry.flags?.ai_assisted}<Robot size="1em" class="inline align-text-bottom text-yellow-500" />{/if}
+							{#if entry.platforms_known && entry.platforms}
+								{#each entry.platforms as os}
+									<span class="px-1.5 rounded text-[10px] leading-4 bg-neutral-700 text-neutral-300">{os == "windows" ? "Win" : os == "mac" ? "Mac" : "Linux"}</span>
+								{/each}
+							{:else if osFilter != "any"}
+								<span class="px-1.5 rounded text-[10px] leading-4 bg-neutral-700 text-yellow-300" title="This plugin doesn't say which systems it supports">Untested on {OS_LABEL[osFilter]}</span>
+							{/if}
+							{#if entry.source == "archive"}<span class="px-1.5 rounded text-[10px] leading-4 bg-neutral-700 text-neutral-400">Old version</span>{/if}
+						</span>
+					</svelte:fragment>
+					{#if entry.source == "archive"}
+						<CloudArrowDown size="24" class="text-neutral-400" />
+					{:else}
+						<ArrowSquareOut size="24" class="text-neutral-400" />
+					{/if}
+				</ListedPlugin>
+			{/each}
 		</div>
 	{/if}
 </Popup>

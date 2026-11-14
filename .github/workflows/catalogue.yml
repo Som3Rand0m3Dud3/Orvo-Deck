@@ -1,0 +1,48 @@
+name: "plugin-catalogue"
+
+# Builds Orvo Studio's plugin catalogue once a day (and on demand) and publishes it to the
+# `catalogue` branch: plugins.json + icons. See scripts/catalogue/build.py.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: plugin-catalogue
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: get the previous catalogue
+        run: |
+          if git fetch --depth 1 origin catalogue:catalogue; then
+            git worktree add out catalogue
+          else
+            git worktree add --orphan -b catalogue out
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: build the catalogue
+        run: python scripts/catalogue/build.py out
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: publish
+        run: |
+          cd out
+          git config user.name "orvo-catalogue"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "catalogue $(date -u +%F)" || exit 0
+          git push origin catalogue
