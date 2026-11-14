@@ -2,7 +2,7 @@
 	"Name": "Orvo M1",
 	"Description": "Device support for the Orvo M1 macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.6.0",
+	"Version": "0.6.1",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",
@@ -90,17 +90,17 @@
 			"VisibleInActionsList": false
 		},
 		{
-			"Name": "Soundboard: voice volume",
+			"Name": "Soundboard: your voice",
 			"UUID": "com.ninedeck.device.sbmic",
 			"Icon": "assets/miclevel",
-			"Tooltip": "Slider sets how loud your voice is in Orvo's virtual mic",
+			"Tooltip": "Slider sets how loud your voice is for others (in Orvo's virtual mic)",
 			"Controllers": [
 				"Encoder"
 			],
 			"States": [
 				{
 					"Image": "assets/miclevel",
-					"Title": "Soundboard: voice volume"
+					"Title": "Your voice"
 				}
 			],
 			"SupportedInMultiActions": false
@@ -109,7 +109,7 @@
 			"Name": "Soundboard: sounds volume",
 			"UUID": "com.ninedeck.device.sbsound",
 			"Icon": "assets/sound",
-			"Tooltip": "Slider sets how loud the soundboard is in Orvo's virtual mic",
+			"Tooltip": "Slider sets the soundboard volume: for everyone, only others, or only you",
 			"Controllers": [
 				"Encoder"
 			],
@@ -119,7 +119,8 @@
 					"Title": "Soundboard: sounds volume"
 				}
 			],
-			"SupportedInMultiActions": false
+			"SupportedInMultiActions": false,
+			"PropertyInspectorPath": "assets/pi/sbsound.html"
 		}
 	],
 	"DeviceNamespace": "nd",

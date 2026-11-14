@@ -15,6 +15,7 @@
 	export let profile: Profile | undefined; // the page showing now; any change re-draws the pages
 
 	let timer: ReturnType<typeof setTimeout> | null = null;
+	const drawn = new Map<string, string>(); // page -> what it looked like when last sent
 	let running = false;
 	let again = false;
 
@@ -30,7 +31,19 @@
 		const state = instance.states[index];
 		if (!state) return null;
 		const fallback = instance.action.states[index]?.image ?? instance.action.icon;
-		const canvas = await renderImage(null, null, state, fallback, false, false, true, false, false, $settings?.rotation, wantsVolumeBadge(instance.action.uuid, state.image_override));
+		const canvas = await renderImage(
+			null,
+			null,
+			state,
+			fallback,
+			false,
+			false,
+			true,
+			false,
+			false,
+			$settings?.rotation,
+			wantsVolumeBadge(instance.action.uuid, state.image_override),
+		);
 		if (!canvas) return null;
 		// see-through parts show the pad's box colour (JPEG has no transparency)
 		const flat = document.createElement("canvas");
@@ -55,9 +68,13 @@
 			const pages: string[] = await invoke("get_profiles", { device });
 			for (const id of [...new Set(pages)]) {
 				const page: Profile = await invoke("orvo_get_profile", { device, id });
+				// Only redraw pages whose boxes changed (flipping pages alone changes nothing).
+				const signature = JSON.stringify([page.keys.slice(0, 9), $settings?.rotation ?? 0]);
+				if (drawn.get(id) == signature) continue;
 				const images: (string | null)[] = [];
 				for (let i = 0; i < 9; i++) images.push(await picture(page.keys[i] ?? null));
 				await invoke("orvo_page_images", { device, profile: id, images });
+				drawn.set(id, signature);
 			}
 		} catch (error) {
 			console.warn("Orvo: could not prepare pad pages", error);
@@ -72,7 +89,17 @@
 	$: if (device) schedule(profile ? 700 : 1500);
 	$: if (profile) schedule();
 
-	const unlisteners = [listen("update_state", () => schedule(1500)), listen("rerender_images", () => schedule()), listen("devices", () => schedule(1500))];
+	const unlisteners = [
+		listen("update_state", () => schedule(1500)),
+		listen("rerender_images", () => {
+			drawn.clear();
+			schedule();
+		}),
+		listen("devices", () => {
+			drawn.clear();
+			schedule(1500);
+		}),
+	];
 	onDestroy(() => {
 		if (timer) clearTimeout(timer);
 		unlisteners.forEach((u) => u.then((f) => f()));

@@ -8,7 +8,19 @@ import { type Writable, writable } from "svelte/store";
 
 export const SOUND_ACTION = "com.ninedeck.device.sound";
 
-export type Sound = { id: string; name: string; file: string; volume: number; mode: "overlap" | "restart" | "loop"; duration_ms: number };
+export type Sound = {
+	id: string;
+	name: string;
+	file: string;
+	volume: number;
+	mode: "overlap" | "restart" | "loop";
+	duration_ms: number;
+	start_ms: number;
+	end_ms: number | null;
+	fade_out: boolean;
+};
+/** How long a sound plays after trimming. */
+export const playedMs = (s: Sound) => Math.max(0, Math.min(s.end_ms ?? s.duration_ms, s.duration_ms) - (s.start_ms ?? 0));
 export type SoundboardConfig = {
 	enabled: boolean;
 	mic_device: string | null;
@@ -18,6 +30,7 @@ export type SoundboardConfig = {
 	monitor_device: string | null;
 	monitor_on: boolean;
 	monitor_gain: number;
+	master_gain: number;
 	mic_preset: MicPreset;
 	mic_fx: MicFx;
 };
@@ -84,7 +97,7 @@ export function refreshSoundboard(): Promise<void> {
 refreshSoundboard();
 listen("soundboard_changed", () => refreshSoundboard());
 // A pad slider moved a soundboard level: update just those numbers.
-listen("soundboard_levels", ({ payload }: { payload: { mic_gain: number; sound_gain: number } }) =>
+listen("soundboard_levels", ({ payload }: { payload: Partial<SoundboardConfig> }) =>
 	soundboard.update((s) => (s ? { ...s, config: { ...s.config, ...payload } } : s)),
 );
 

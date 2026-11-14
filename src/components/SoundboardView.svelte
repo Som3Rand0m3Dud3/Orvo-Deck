@@ -13,7 +13,8 @@
 	import UploadSimple from "phosphor-svelte/lib/UploadSimple";
 
 	import { ask, message } from "$lib/dialog";
-	import { MIC_PRESETS, refreshSoundboard, soundboard, type MicFx, type MicPreset, type Sound, type SoundboardConfig } from "$lib/soundboard";
+	import TrimEditor from "./TrimEditor.svelte";
+	import { MIC_PRESETS, playedMs, refreshSoundboard, soundboard, type MicFx, type MicPreset, type Sound, type SoundboardConfig } from "$lib/soundboard";
 	import SlidersHorizontal from "phosphor-svelte/lib/SlidersHorizontal";
 
 	import { invoke } from "@tauri-apps/api/core";
@@ -283,14 +284,14 @@
 						<p class="text-sm text-neutral-400">Not set up yet: see above.</p>
 					{/if}
 					<div class="flex flex-col gap-1">
-						<div class="flex justify-between text-xs text-neutral-400"><span>Sounds in the mic</span><span>{pct(config.sound_gain)}%</span></div>
+						<div class="flex justify-between text-xs text-neutral-400"><span>Sounds: what others hear</span><span>{pct(config.sound_gain)}%</span></div>
 						<input
 							type="range"
 							min="0"
 							max="2"
 							step="0.01"
 							value={config.sound_gain}
-							aria-label="Sounds volume in the virtual mic"
+							aria-label="Sounds: what others hear"
 							on:input={(e) => setConfig({ sound_gain: +e.currentTarget.value })}
 						/>
 					</div>
@@ -352,14 +353,14 @@
 						<div class="h-full rounded-full transition-[width] duration-75" style="width: {meterPct(meter.out_db)}%; background: var(--orvo-accent)"></div>
 					</div>
 					<div class="flex flex-col gap-1">
-						<div class="flex justify-between text-xs text-neutral-400"><span>Voice volume</span><span>{pct(config.mic_gain)}%</span></div>
+						<div class="flex justify-between text-xs text-neutral-400"><span>Your voice: what others hear</span><span>{pct(config.mic_gain)}%</span></div>
 						<input
 							type="range"
 							min="0"
 							max="2"
 							step="0.01"
 							value={config.mic_gain}
-							aria-label="Voice volume"
+							aria-label="Your voice: what others hear"
 							on:input={(e) => setConfig({ mic_gain: +e.currentTarget.value })}
 						/>
 					</div>
@@ -392,14 +393,14 @@
 						</select>
 					</div>
 					<div class="flex flex-col gap-1">
-						<div class="flex justify-between text-xs text-neutral-400"><span>Sounds volume</span><span>{pct(config.monitor_gain)}%</span></div>
+						<div class="flex justify-between text-xs text-neutral-400"><span>Sounds: what you hear</span><span>{pct(config.monitor_gain)}%</span></div>
 						<input
 							type="range"
 							min="0"
 							max="2"
 							step="0.01"
 							value={config.monitor_gain}
-							aria-label="Sounds volume in your headphones"
+							aria-label="Sounds: what you hear"
 							on:input={(e) => setConfig({ monitor_gain: +e.currentTarget.value })}
 						/>
 					</div>
@@ -516,6 +517,26 @@
 				<span class="text-sm text-neutral-400">{state?.sounds.length ?? 0}</span>
 				{#if adding > 0}<span class="text-sm animate-pulse" style="color: var(--orvo-accent)">Adding {adding}…</span>{/if}
 				<div class="grow"></div>
+				{#if config}
+					<label
+						class="flex items-center gap-2 h-9 px-3 rounded-lg bg-neutral-800 border border-neutral-700"
+						title="Main volume: turns every sound up or down for you and your listeners together"
+					>
+						<SpeakerHigh size="16" class="text-neutral-300" />
+						<span class="text-sm text-neutral-300 whitespace-nowrap">Soundboard volume</span>
+						<input
+							class="w-32"
+							type="range"
+							min="0"
+							max="2"
+							step="0.01"
+							value={config.master_gain ?? 1}
+							aria-label="Soundboard volume"
+							on:input={(e) => setConfig({ master_gain: +e.currentTarget.value })}
+						/>
+						<span class="w-10 text-right text-xs text-neutral-400">{pct(config.master_gain ?? 1)}%</span>
+					</label>
+				{/if}
 				<label class="flex items-center h-9 px-3 gap-2 rounded-lg bg-neutral-800 border border-neutral-700">
 					<MagnifyingGlass size="14" class="text-neutral-400" />
 					<input bind:value={query} class="w-40 bg-transparent text-sm text-neutral-200" placeholder="Search sounds" type="search" spellcheck="false" />
@@ -561,8 +582,9 @@
 								</span>
 								<span class="w-full text-sm font-semibold text-neutral-100 truncate">{sound.name}</span>
 							</button>
-							<div class="flex items-center gap-1.5 px-3 pb-3 text-xs text-neutral-400">
-								<span>{seconds(sound.duration_ms)}</span>
+							<div class="flex flex-wrap items-center gap-1.5 px-3 pb-3 text-xs text-neutral-400 whitespace-nowrap">
+								<span>{seconds(playedMs(sound))}</span>
+								{#if playedMs(sound) < sound.duration_ms}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">Trimmed</span>{/if}
 								{#if sound.mode != "overlap"}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">{MODE_LABEL[sound.mode]}</span>{/if}
 								{#if sound.volume != 1}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">{pct(sound.volume)}%</span>{/if}
 							</div>
@@ -604,7 +626,7 @@
 	<div
 		role="dialog"
 		aria-label="Edit sound"
-		class="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[24rem] max-w-[calc(100%-2rem)] p-5 flex flex-col gap-4 rounded-2xl bg-neutral-900 border border-neutral-600 shadow-2xl"
+		class="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[40rem] max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto p-5 flex flex-col gap-4 rounded-2xl bg-neutral-900 border border-neutral-600 shadow-2xl"
 	>
 		<label class="flex flex-col gap-1.5 text-sm text-neutral-400">
 			Name
@@ -627,6 +649,9 @@
 				on:input={(e) => edit({ volume: +e.currentTarget.value })}
 			/>
 		</div>
+		{#key editing.id}
+			<TrimEditor sound={editing} on:change={(e) => edit(e.detail)} />
+		{/key}
 		<div class="flex flex-col gap-1.5">
 			<span class="text-sm text-neutral-400">When pressed again while playing</span>
 			<div role="radiogroup" aria-label="Play mode" class="grid grid-cols-3 gap-1 p-1 rounded-xl bg-neutral-800">

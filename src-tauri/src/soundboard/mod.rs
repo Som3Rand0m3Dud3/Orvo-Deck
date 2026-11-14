@@ -14,7 +14,7 @@ use std::sync::{LazyLock, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, command};
 
-use engine::{Clip, Engine, EngineStatus, Routing, VoiceCmd, store};
+use engine::{Clip, Engine, EngineStatus, Routing, Span, VoiceCmd, store};
 
 use crate::events::frontend::Error;
 
@@ -33,8 +33,27 @@ pub struct Sound {
 	/// "overlap" (play on top), "restart" (start again), "loop" (press again to stop)
 	#[serde(default = "overlap")]
 	pub mode: String,
+	/// Full length of the file.
 	#[serde(default)]
 	pub duration_ms: u64,
+	/// Trim: where playing starts and stops (ms into the file; None = the end).
+	#[serde(default)]
+	pub start_ms: u64,
+	#[serde(default)]
+	pub end_ms: Option<u64>,
+	/// Short fade at the (trimmed) end so it never stops with a click.
+	#[serde(default = "yes")]
+	pub fade_out: bool,
+}
+
+impl Sound {
+	fn span(&self, clip_frames: usize) -> Span {
+		let ms = |m: u64| (m as usize).saturating_mul(engine::CLIP_RATE as usize) / 1000;
+		let end = self.end_ms.map(ms).unwrap_or(clip_frames).min(clip_frames);
+		let start = ms(self.start_ms).min(end);
+		let fade = if self.fade_out { (engine::CLIP_RATE as usize * 3 / 100).min((end - start) / 2) } else { 0 };
+		Span { start, end, fade }
+	}
 }
 fn one() -> f32 {
 	1.0
@@ -61,6 +80,9 @@ pub struct Config {
 	pub monitor_on: bool,
 	#[serde(default = "half")]
 	pub monitor_gain: f32,
+	/// Main soundboard volume (multiplies what others hear and what you hear).
+	#[serde(default = "one")]
+	pub master_gain: f32,
 	/// "off", "natural", "isolation", "studio" or "custom" (the app keeps the preset values).
 	#[serde(default = "studio")]
 	pub mic_preset: String,
@@ -141,6 +163,7 @@ fn apply_levels(st: &State) {
 		store(&l.mic_gain, c.mic_gain.clamp(0.0, 2.0));
 		store(&l.sound_gain, c.sound_gain.clamp(0.0, 2.0));
 		store(&l.monitor_gain, c.monitor_gain.clamp(0.0, 2.0));
+		store(&l.master_gain, c.master_gain.clamp(0.0, 2.0));
 		if let Ok(mut fx) = engine.fx.lock() {
 			*fx = c.mic_fx;
 		}
@@ -149,7 +172,13 @@ fn apply_levels(st: &State) {
 
 /// Tells the pad plugin the soundboard levels, so its sliders pick up from the right place.
 fn send_levels_to_plugin(c: &Config) {
-	let msg = serde_json::json!({ "event": "orvoSoundboardLevels", "mic": c.mic_gain.min(1.0), "sound": c.sound_gain.min(1.0) });
+	let msg = serde_json::json!({
+		"event": "orvoSoundboardLevels",
+		"mic": c.mic_gain.min(1.0),
+		"sound": c.sound_gain.min(1.0),
+		"monitor": c.monitor_gain.min(1.0),
+		"master": c.master_gain.min(1.0),
+	});
 	tauri::async_runtime::spawn(async move {
 		let _ = crate::events::outbound::orvo_send_to_plugin(crate::events::frontend::pad::NINEDECK_PLUGIN, &msg).await;
 	});
@@ -200,13 +229,18 @@ pub fn set_level(which: &str, value: f32) {
 	match which {
 		"mic" => st.config.mic_gain = value,
 		"sound" => st.config.sound_gain = value,
+		"monitor" => st.config.monitor_gain = value,
+		"master" => st.config.master_gain = value,
 		_ => return,
 	}
 	apply_levels(&st);
-	let (mic, sound) = (st.config.mic_gain, st.config.sound_gain);
+	let c = st.config.clone();
 	drop(st);
 	if let Some(app) = crate::APP_HANDLE.get() {
-		let _ = app.emit("soundboard_levels", serde_json::json!({ "mic_gain": mic, "sound_gain": sound }));
+		let _ = app.emit(
+			"soundboard_levels",
+			serde_json::json!({ "mic_gain": c.mic_gain, "sound_gain": c.sound_gain, "monitor_gain": c.monitor_gain, "master_gain": c.master_gain }),
+		);
 	}
 	// save once the slider rests
 	let first = {
@@ -250,24 +284,31 @@ pub fn play(id: &str) -> anyhow::Result<()> {
 		restart(&mut st);
 	}
 	let (clip, sound) = clip_for(&mut st, id)?;
+	let span = sound.span(clip.len() / 2);
 	let engine = st.engine.as_ref().unwrap();
 	let is_playing = engine.playing.lock().unwrap().contains_key(id);
+	let gain = sound.volume.clamp(0.0, 2.0);
+	let key = id.to_owned();
 	match sound.mode.as_str() {
-		"loop" if is_playing => engine.send(VoiceCmd::Stop(id.to_owned())),
+		"loop" if is_playing => engine.send(VoiceCmd::Stop(key)),
 		"restart" | "loop" => {
-			engine.send(VoiceCmd::Stop(id.to_owned()));
+			engine.send(VoiceCmd::Stop(key.clone()));
 			engine.send(VoiceCmd::Play {
-				key: id.to_owned(),
+				key,
 				clip,
-				gain: sound.volume.clamp(0.0, 2.0),
+				gain,
 				looped: sound.mode == "loop",
+				span,
+				monitor_only: false,
 			});
 		}
 		_ => engine.send(VoiceCmd::Play {
-			key: id.to_owned(),
+			key,
 			clip,
-			gain: sound.volume.clamp(0.0, 2.0),
+			gain,
 			looped: false,
+			span,
+			monitor_only: false,
 		}),
 	}
 	drop(st);
@@ -373,6 +414,9 @@ fn add_one(file_name: &str, bytes: &[u8]) -> anyhow::Result<Sound> {
 		volume: 1.0,
 		mode: "overlap".into(),
 		duration_ms: (data.len() / 2) as u64 * 1000 / engine::CLIP_RATE as u64,
+		start_ms: 0,
+		end_ms: None,
+		fade_out: true,
 	};
 	let mut st = STATE.lock().unwrap();
 	load(&mut st);
@@ -462,6 +506,10 @@ pub fn sb_update(sound: Sound) -> Result<(), Error> {
 		"restart" | "loop" => sound.mode,
 		_ => "overlap".into(),
 	};
+	let full = s.duration_ms;
+	s.end_ms = sound.end_ms.map(|e| e.min(full)).filter(|e| *e < full);
+	s.start_ms = sound.start_ms.min(s.end_ms.unwrap_or(full).saturating_sub(20));
+	s.fade_out = sound.fade_out;
 	save(&st);
 	drop(st);
 	notify();
@@ -500,11 +548,87 @@ pub async fn sb_play(id: String) -> Result<(), Error> {
 	Ok(())
 }
 
+/// Plays a sound (trimmed) in your headphones only, for the edit window. The key is
+/// "preview:<id>" so it never counts as the tile playing.
+#[command]
+pub async fn sb_preview(id: String, start_ms: u64, end_ms: Option<u64>, fade_out: bool) -> Result<(), Error> {
+	tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+		let mut st = STATE.lock().unwrap();
+		load(&mut st);
+		if st.engine.is_none() || !st.config.enabled {
+			st.config.enabled = true;
+			restart(&mut st);
+		}
+		let (clip, sound) = clip_for(&mut st, &id)?;
+		let trial = Sound { start_ms, end_ms, fade_out, ..sound };
+		let span = trial.span(clip.len() / 2);
+		let engine = st.engine.as_ref().unwrap();
+		let key = format!("preview:{id}");
+		engine.send(VoiceCmd::Stop(key.clone()));
+		engine.send(VoiceCmd::Play {
+			key,
+			clip,
+			gain: trial.volume.clamp(0.0, 2.0),
+			looped: false,
+			span,
+			monitor_only: true,
+		});
+		Ok(())
+	})
+	.await
+	.map_err(anyhow::Error::from)??;
+	Ok(())
+}
+
+#[command]
+pub fn sb_stop(id: String) {
+	let st = STATE.lock().unwrap();
+	if let Some(e) = &st.engine {
+		e.send(VoiceCmd::Stop(id));
+	}
+}
+
+/// The sound's shape for the trim view: `points` loudness peaks (0–1) across the whole file.
+#[command]
+pub async fn sb_waveform(id: String, points: usize) -> Result<Vec<f32>, Error> {
+	let peaks = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<f32>> {
+		let mut st = STATE.lock().unwrap();
+		load(&mut st);
+		let (clip, _) = clip_for(&mut st, &id)?;
+		drop(st);
+		let frames = clip.len() / 2;
+		let points = points.clamp(16, 2000);
+		let mut out = vec![0f32; points];
+		if frames == 0 {
+			return Ok(out);
+		}
+		for (n, peak) in out.iter_mut().enumerate() {
+			let a = n * frames / points;
+			let b = ((n + 1) * frames / points).max(a + 1).min(frames);
+			let step = ((b - a) / 64).max(1);
+			let mut m = 0f32;
+			let mut i = a;
+			while i < b {
+				m = m.max(clip[i * 2].abs()).max(clip[i * 2 + 1].abs());
+				i += step;
+			}
+			*peak = m.min(1.0);
+		}
+		Ok(out)
+	})
+	.await
+	.map_err(anyhow::Error::from)??;
+	Ok(peaks)
+}
+
 /// Ids of the sounds playing right now (cheap: for the tiles' "playing" look).
 #[command]
 pub fn sb_playing() -> Vec<String> {
 	let st = STATE.lock().unwrap();
-	st.engine.as_ref().map(|e| e.playing.lock().unwrap().keys().cloned().collect()).unwrap_or_default()
+	st.engine
+		.as_ref()
+		.map(|e| e.playing.lock().unwrap().keys().filter(|k| !k.starts_with("preview:")).cloned().collect())
+		.unwrap_or_default()
 }
 
 #[command]

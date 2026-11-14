@@ -190,6 +190,9 @@ async fn main() {
 			soundboard::sb_set_config,
 			soundboard::sb_refresh,
 			soundboard::sb_listen,
+			soundboard::sb_preview,
+			soundboard::sb_stop,
+			soundboard::sb_waveform,
 			soundboard::sb_meter,
 		])
 		.setup(|app| {

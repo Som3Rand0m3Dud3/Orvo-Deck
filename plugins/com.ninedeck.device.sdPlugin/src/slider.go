@@ -25,24 +25,39 @@ const (
 // Soundboard levels as Orvo Studio last reported them (0-1, 1 = 100 %).
 var (
 	sbMu     sync.Mutex
-	sbLevels = map[string]float32{"mic": 1, "sound": 1}
+	sbLevels = map[string]float32{"mic": 1, "sound": 1, "monitor": 0.6, "master": 1}
 )
 
-func sbWhich(action string) string {
-	if action == actSbMic {
-		return "mic"
+// sbTarget: who a sounds-volume slider changes the sounds for ("all", "others" or "me").
+func sbTarget(a *sliderAction) string {
+	t, _ := a.settings["target"].(string)
+	if t == "others" || t == "me" {
+		return t
 	}
-	return "sound"
+	return "all"
 }
 
-func setSoundboardLevels(mic, sound *float64) {
+// sbWhich: the Orvo Studio level a soundboard slider action moves.
+func sbWhich(a *sliderAction) string {
+	if a.action == actSbMic {
+		return "mic"
+	}
+	switch sbTarget(a) {
+	case "others":
+		return "sound"
+	case "me":
+		return "monitor"
+	}
+	return "master"
+}
+
+func setSoundboardLevels(levels map[string]*float64) {
 	sbMu.Lock()
 	defer sbMu.Unlock()
-	if mic != nil {
-		sbLevels["mic"] = float32(*mic)
-	}
-	if sound != nil {
-		sbLevels["sound"] = float32(*sound)
+	for k, v := range levels {
+		if v != nil {
+			sbLevels[k] = float32(*v)
+		}
 	}
 }
 
@@ -78,6 +93,9 @@ func devOf(a *sliderAction) string {
 
 func targetKey(a *sliderAction) string {
 	app, _ := a.settings["app"].(string)
+	if a.action == actSbSound {
+		return a.action + "|" + sbTarget(a)
+	}
 	if dev := devOf(a); dev != "" {
 		return a.action + "|" + appKey(app) + "|" + dev
 	}
@@ -96,7 +114,7 @@ func levelOf(a *sliderAction) (float32, bool) {
 	case actSbMic, actSbSound:
 		sbMu.Lock()
 		defer sbMu.Unlock()
-		v := sbLevels[sbWhich(a.action)]
+		v := sbLevels[sbWhich(a)]
 		if v > 1 {
 			v = 1
 		}
@@ -148,9 +166,15 @@ func sliderName(a *sliderAction) string {
 	case actMic:
 		return "Mic level"
 	case actSbMic:
-		return "Voice volume"
+		return "Your voice"
 	case actSbSound:
-		return "Sounds volume"
+		switch sbTarget(a) {
+		case "others":
+			return "Sounds: others"
+		case "me":
+			return "Sounds: me"
+		}
+		return "Soundboard volume"
 	case actApp:
 		if app, _ := a.settings["app"].(string); app != "" {
 			return cleanLabel(strings.TrimSuffix(strings.ToLower(app), ".exe")) + " volume"
@@ -311,7 +335,7 @@ func applyLevel(a *sliderAction, level float32) {
 		app, _ := a.settings["app"].(string)
 		setVolume(volApp, app, "", level)
 	case actSbMic, actSbSound:
-		which := sbWhich(a.action)
+		which := sbWhich(a)
 		sbMu.Lock()
 		sbLevels[which] = level
 		sbMu.Unlock()

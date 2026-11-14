@@ -40,7 +40,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.9.5"
+#define FW_VERSION "0.9.6"
 
 #define PIN_DC   16
 #define PIN_CS   17
@@ -403,6 +403,42 @@ void setup() {
   digitalWrite(PIN_BL, HIGH);
 }
 
+// Keys are also read while a picture is coming in, so a press is never held back by a busy
+// screen update. The press shows on the pad's screen once the picture has arrived.
+static uint16_t feedbackDue = 0;
+void scanKeysQuick() {
+  if (calStep >= 0) return;
+  uint32_t now = millis();
+  for (int i = 0; i < 11; i++) {
+    bool p = digitalRead(KEY_PINS[i]) == LOW;
+    if (p != state[i] && now - changedAt[i] > 8) {
+      state[i] = p;
+      changedAt[i] = now;
+      Serial.print('K'); Serial.print(i + 1); Serial.println(p ? " 1" : " 0");
+      if (hidOn) { if (p) Keyboard.press(KEY_CODES[i]); else Keyboard.release(KEY_CODES[i]); }
+      feedbackDue |= 1u << i;
+    }
+  }
+}
+
+size_t readBytesScanning(uint8_t *dst, size_t len) {
+  size_t got = 0;
+  uint32_t last = millis();
+  while (got < len) {
+    int avail = Serial.available();
+    if (avail > 0) {
+      size_t want = len - got;
+      if ((size_t)avail < want) want = avail;
+      got += Serial.readBytes((char *)dst + got, want);
+      last = millis();
+    } else if (millis() - last > 1000) {
+      break;
+    }
+    scanKeysQuick();
+  }
+  return got;
+}
+
 void handleSerial() {
   static char buf[80];
   static uint8_t n = 0;
@@ -426,7 +462,7 @@ void handleSerial() {
       sscanf(buf + 1, "%d %d %d", &k, &w, &h);
       size_t len = (size_t)w * h * 2;
       if (k >= 1 && k <= 9 && w == BOX && h == BOX) {
-        size_t got = Serial.readBytes((char *)boxes[k - 1], len);
+        size_t got = readBytesScanning((uint8_t *)boxes[k - 1], len);
         hasPicture[k - 1] = got == len;
       } else {                                        // wrong size: read and drop it
         for (size_t i = 0; i < len; i++) { uint32_t t0 = millis(); while (!Serial.available() && millis() - t0 < 500) {} if (Serial.available()) Serial.read(); }
@@ -436,7 +472,7 @@ void handleSerial() {
       int k = 0, w = 0, h = 0, len = 0;
       sscanf(buf + 1, "%d %d %d %d", &k, &w, &h, &len);
       if (len < 0 || len > (int)sizeof packed) len = 0;
-      size_t got = Serial.readBytes((char *)packed, len);
+      size_t got = readBytesScanning(packed, len);
       if (k >= 1 && k <= 9 && w == BOX && h == BOX && got == (size_t)len) {
         uint16_t *dst = boxes[k - 1];
         int out = 0;
@@ -628,4 +664,18 @@ void loop() {
     }
   }
   handleSerial();
+  // presses noticed while a picture was arriving: show them now
+  if (feedbackDue && !idle) {
+    uint16_t due = feedbackDue;
+    feedbackDue = 0;
+    bool panel = false;
+    for (int i = 0; i < 11; i++) {
+      if (!(due & (1u << i))) continue;
+      if (i < 9) { composeBox(i); push(boxX(i), boxY(i), BOX, BOX); }
+      else panel = true;
+    }
+    if (panel) { composePanel(); push(PX, 0, SW - PX, SH); }
+  } else if (idle) {
+    feedbackDue = 0;
+  }
 }

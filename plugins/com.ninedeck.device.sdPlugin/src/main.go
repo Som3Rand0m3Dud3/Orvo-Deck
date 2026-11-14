@@ -59,6 +59,7 @@ type pad struct {
 	timer   *time.Timer
 	page    string    // page (profile id) the pad shows now
 	flipped time.Time // when the pad's own page keys last changed page
+	flipHit bool      // that page change was drawn from the saved pictures
 	shown   [9][]byte // what each box shows now (to skip resending the same picture)
 	smu     sync.Mutex // one sender at a time (pad keys and app updates)
 	labels  [numKeys]string
@@ -143,6 +144,8 @@ func main() {
 			Recal      bool      `json:"recalibrate"`
 			SbMic      *float64  `json:"mic"`
 			SbSound    *float64  `json:"sound"`
+			SbMonitor  *float64  `json:"monitor"`
+			SbMaster   *float64  `json:"master"`
 		}
 		json.Unmarshal(msg, &ev)
 		switch ev.Event {
@@ -181,7 +184,7 @@ func main() {
 				padsMu.Unlock()
 			}
 		case "orvoSoundboardLevels":
-			setSoundboardLevels(ev.SbMic, ev.SbSound)
+			setSoundboardLevels(map[string]*float64{"mic": ev.SbMic, "sound": ev.SbSound, "monitor": ev.SbMonitor, "master": ev.SbMaster})
 		case "orvoPageImages":
 			go storePage(ev.Device, ev.Profile, ev.Images)
 		case "orvoPadStatusRequest":
@@ -586,6 +589,7 @@ func flipPage(p *pad, step int) {
 		p.flipped = time.Now()
 		p.pending = map[int][]byte{}
 		cached, ok := pageCache(device, next)
+		p.flipHit = ok
 		p.pmu.Unlock()
 		if ok && !newer("0.5", p.fw) {
 			p.write(fmt.Sprintf("A %d", step)) // slide the new page in from the side of the key pressed
@@ -598,6 +602,10 @@ func flipPage(p *pad, step int) {
 		p.pageSet = pageName(next)
 		p.write("P " + p.pageSet)
 		p.write("F")
+		if ok {
+			// Once the page has settled, show anything the app drew differently (live keys).
+			time.AfterFunc(1600*time.Millisecond, func() { catchUp(p, next) })
+		}
 	}
 	send(map[string]any{"event": "switchProfile", "device": device, "profile": next})
 	if p.box == 0 {
@@ -605,6 +613,29 @@ func flipPage(p *pad, step int) {
 			time.Sleep(400 * time.Millisecond)
 			kickLabels()
 		}()
+	}
+}
+
+// catchUp sends the boxes whose saved picture changed while the page was being flipped to.
+func catchUp(p *pad, page string) {
+	p.pmu.Lock()
+	still := p.page == page && time.Since(p.flipped) >= 1500*time.Millisecond
+	p.pmu.Unlock()
+	if !still {
+		return // flipped on again: that flip has its own catch-up
+	}
+	cached, ok := pageCache(p.id, page)
+	if !ok {
+		return
+	}
+	changed := false
+	for pos := 0; pos < 9; pos++ {
+		if sendBox(p, pos, cached[pos]) {
+			changed = true
+		}
+	}
+	if changed {
+		p.write("F")
 	}
 }
 
@@ -860,7 +891,7 @@ func renumber(v any, oldPos, newPos int) {
 // ---------- firmware updates (asked for by Orvo Studio) ----------
 
 // The newest firmware ships next to this plugin as firmware/ninedeck-fw.uf2.
-const latestFirmware = "0.9.5"
+const latestFirmware = "0.9.6"
 
 var (
 	updMu    sync.Mutex
@@ -1025,6 +1056,11 @@ func queuePicture(device, profile string, pos int, dataURL string) {
 				return // a late picture from the page we just left: the pad already moved on
 			}
 			p.page = profile // the page was changed in the app
+		} else if p.flipHit && time.Since(p.flipped) < 1500*time.Millisecond {
+			// The pad already shows this page from the saved pictures; the app's redraw of the
+			// same page only refreshes them. Resending would keep the pad busy (and slow the next
+			// page key press) for no visible change.
+			return
 		}
 	}
 	p.pending[pos] = pix

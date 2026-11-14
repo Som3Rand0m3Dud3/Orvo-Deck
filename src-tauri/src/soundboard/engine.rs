@@ -23,9 +23,24 @@ pub const CLIP_RATE: u32 = 48_000;
 /// Interleaved stereo samples at CLIP_RATE.
 pub type Clip = Arc<Vec<f32>>;
 
+/// Which part of a clip plays (frames at CLIP_RATE) and how long its fade-out is.
+#[derive(Clone, Copy)]
+pub struct Span {
+	pub start: usize,
+	pub end: usize,
+	pub fade: usize,
+}
+
 #[derive(Clone)]
 pub enum VoiceCmd {
-	Play { key: String, clip: Clip, gain: f32, looped: bool },
+	Play {
+		key: String,
+		clip: Clip,
+		gain: f32,
+		looped: bool,
+		span: Span,
+		monitor_only: bool,
+	},
 	Stop(String),
 	StopAll,
 }
@@ -44,6 +59,8 @@ pub struct Levels {
 	pub sound_gain: AtomicU32,
 	pub monitor_on: AtomicBool,
 	pub monitor_gain: AtomicU32,
+	/// Main soundboard volume: multiplies both what others hear and what you hear.
+	pub master_gain: AtomicU32,
 }
 
 fn load(a: &AtomicU32) -> f32 {
@@ -401,6 +418,7 @@ struct Voice {
 	pos: f64,
 	gain: f32,
 	looped: bool,
+	span: Span,
 }
 
 pub struct Mixer {
@@ -433,7 +451,29 @@ impl Mixer {
 	fn fill<T: Sample + FromSample<f32>>(&mut self, data: &mut [T]) {
 		while let Ok(cmd) = self.rx.try_recv() {
 			match cmd {
-				VoiceCmd::Play { key, clip, gain, looped } => self.voices.push(Voice { key, clip, pos: 0.0, gain, looped }),
+				VoiceCmd::Play {
+					key,
+					clip,
+					gain,
+					looped,
+					span,
+					monitor_only,
+				} => {
+					if monitor_only && self.is_virtual {
+						self.finished.push(key); // a preview: only in your headphones
+						continue;
+					}
+					let end = span.end.min(clip.len() / 2);
+					let start = span.start.min(end);
+					self.voices.push(Voice {
+						key,
+						clip,
+						pos: start as f64,
+						gain,
+						looped,
+						span: Span { start, end, fade: span.fade },
+					})
+				}
 				VoiceCmd::Stop(key) => self.voices.retain(|v| {
 					let keep = v.key != key;
 					if !keep {
@@ -447,6 +487,7 @@ impl Mixer {
 			}
 		}
 
+		let master = load(&self.levels.master_gain);
 		let (sound_gain, mic_gain, mic_on) = if self.is_virtual {
 			(load(&self.levels.sound_gain), load(&self.levels.mic_gain), self.levels.mic_on.load(Ordering::Relaxed))
 		} else {
@@ -458,32 +499,41 @@ impl Mixer {
 			)
 		};
 
+		let sound_gain = sound_gain * master;
+		const FADE_IN: f64 = (CLIP_RATE / 200) as f64; // 5 ms, so a trimmed start doesn't click
 		for frame in data.chunks_mut(self.channels) {
 			let (mut l, mut r) = (0.0f32, 0.0f32);
 			for v in self.voices.iter_mut() {
-				let frames = v.clip.len() / 2;
-				if frames == 0 {
+				let Span { start, end, fade } = v.span;
+				if end <= start {
 					continue;
 				}
 				let mut i = v.pos as usize;
-				if i >= frames {
+				if i >= end {
 					if v.looped {
-						v.pos -= frames as f64;
+						v.pos -= (end - start) as f64;
 						i = v.pos as usize;
 					} else {
 						continue;
 					}
 				}
 				let t = (v.pos - i as f64) as f32;
-				let j = if i + 1 < frames {
+				let j = if i + 1 < end {
 					i + 1
 				} else if v.looped {
-					0
+					start
 				} else {
 					i
 				};
-				l += (v.clip[i * 2] * (1.0 - t) + v.clip[j * 2] * t) * v.gain;
-				r += (v.clip[i * 2 + 1] * (1.0 - t) + v.clip[j * 2 + 1] * t) * v.gain;
+				let mut g = v.gain;
+				if !v.looped && fade > 0 && end - i < fade {
+					g *= (end - i) as f32 / fade as f32;
+				}
+				if start > 0 && v.pos - (start as f64) < FADE_IN {
+					g *= ((v.pos - start as f64) / FADE_IN).max(0.0) as f32;
+				}
+				l += (v.clip[i * 2] * (1.0 - t) + v.clip[j * 2] * t) * g;
+				r += (v.clip[i * 2 + 1] * (1.0 - t) + v.clip[j * 2 + 1] * t) * g;
 				v.pos += self.step;
 			}
 			l *= sound_gain;
@@ -512,7 +562,7 @@ impl Mixer {
 		let before = self.voices.len();
 		let finished = &mut self.finished;
 		self.voices.retain(|v| {
-			let alive = v.looped || (v.pos as usize) < v.clip.len() / 2;
+			let alive = v.looped || (v.pos as usize) < v.span.end;
 			if !alive {
 				finished.push(v.key.clone());
 			}
@@ -604,6 +654,7 @@ mod tests {
 		levels.mic_on.store(true, Ordering::Relaxed);
 		store(&levels.mic_gain, 1.0);
 		store(&levels.sound_gain, 1.0);
+		store(&levels.master_gain, 1.0);
 		let (mut prod, cons) = HeapRb::<f32>::new(48_000).split();
 		for _ in 0..4_000 {
 			let _ = prod.try_push(0.25);
@@ -614,11 +665,14 @@ mod tests {
 		// output at 44.1 kHz, mic at 48 kHz: both get resampled
 		let mut m = Mixer::new(44_100, 2, rx, Some((cons, 48_000)), levels, true, playing.clone());
 		let clip: Clip = Arc::new(vec![0.5; 48_000 * 2 / 10]); // 0.1 s
+		let span = Span { start: 0, end: 4_800, fade: 0 };
 		tx.send(VoiceCmd::Play {
 			key: "a".into(),
 			clip,
 			gain: 1.0,
 			looped: false,
+			span,
+			monitor_only: false,
 		})
 		.unwrap();
 		let mut buf = vec![0.0f32; 2 * 441]; // 10 ms
@@ -630,5 +684,53 @@ mod tests {
 		}
 		assert!(m.voices.is_empty(), "sound should have finished");
 		assert!(playing.lock().unwrap().is_empty(), "playing list should be cleared");
+	}
+
+	#[test]
+	fn trims_fades_and_keeps_previews_out_of_the_mic() {
+		let levels = Arc::new(Levels::default());
+		store(&levels.sound_gain, 1.0);
+		store(&levels.master_gain, 0.5);
+		let (tx, rx) = channel();
+		let playing = Arc::new(Mutex::new(HashMap::new()));
+		let mut m = Mixer::new(48_000, 2, rx, None, levels, true, playing);
+		// clip: 0.1 s of silence then 0.1 s at 0.8
+		let mut data = vec![0.0f32; 4_800 * 2];
+		data.extend(vec![0.8f32; 4_800 * 2]);
+		let clip: Clip = Arc::new(data);
+		// a preview never reaches the virtual mic
+		tx.send(VoiceCmd::Play {
+			key: "p".into(),
+			clip: clip.clone(),
+			gain: 1.0,
+			looped: false,
+			span: Span { start: 4_800, end: 9_600, fade: 0 },
+			monitor_only: true,
+		})
+		.unwrap();
+		let mut buf = vec![0.0f32; 2 * 480];
+		m.fill(&mut buf);
+		assert!(buf.iter().all(|x| *x == 0.0), "preview leaked into the mic");
+		// trimmed start: sound comes in at once (after the 5 ms fade-in), at master 50 %
+		tx.send(VoiceCmd::Play {
+			key: "a".into(),
+			clip,
+			gain: 1.0,
+			looped: false,
+			span: Span {
+				start: 4_800,
+				end: 7_200,
+				fade: 1_200,
+			},
+			monitor_only: false,
+		})
+		.unwrap();
+		m.fill(&mut buf);
+		assert!((buf[2 * 400] - 0.4).abs() < 0.01, "expected 0.4 right after the trimmed start, got {}", buf[800]);
+		// 2 400 frames long: done after 5 buffers of 480
+		for _ in 0..5 {
+			m.fill(&mut buf);
+		}
+		assert!(m.voices.is_empty(), "trimmed end should stop the sound");
 	}
 }

@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #12151b; }
+body { padding: 12px; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; color: #d4d8e0; }
+label { display: block; margin-bottom: 6px; color: #8a91a0; }
+select { width: 100%; height: 34px; border-radius: 8px; border: 1px solid #2e3440; background: #1a1f28; color: #e6e8ee; font: inherit; padding: 0 8px; }
+p { margin: 8px 0 0; color: #8a91a0; line-height: 1.4; }
+</style>
+</head>
+<body>
+<label for="pick">Who the slider changes the sounds for</label>
+<select id="pick">
+	<option value="all">Everyone (main soundboard volume)</option>
+	<option value="others">Only others (what Discord / OBS hear)</option>
+	<option value="me">Only me (my headphones)</option>
+</select>
+<p id="note"></p>
+<script>
+let ws, uuid, settings = {};
+const pick = document.getElementById("pick");
+const NOTES = {
+	all: "Turns every sound up or down for you and your listeners together, keeping your balance (e.g. you at 20 %, them at 100 %).",
+	others: "Only changes how loud the sounds are in your virtual mic.",
+	me: "Only changes how loud you hear the sounds in your headphones.",
+};
+function show() { document.getElementById("note").textContent = NOTES[pick.value] || ""; }
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+	uuid = inUUID;
+	try { settings = JSON.parse(actionInfo).payload.settings || {}; } catch (e) {}
+	pick.value = settings.target || "all";
+	show();
+	ws = new WebSocket("ws://127.0.0.1:" + port);
+	ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
+}
+pick.addEventListener("change", () => {
+	settings.target = pick.value;
+	show();
+	if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+});
+</script>
+</body>
+</html>
