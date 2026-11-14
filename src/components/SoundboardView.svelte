@@ -14,7 +14,18 @@
 
 	import { ask, message } from "$lib/dialog";
 	import TrimEditor from "./TrimEditor.svelte";
-	import { MIC_PRESETS, playedMs, refreshSoundboard, soundboard, type MicFx, type MicPreset, type Sound, type SoundboardConfig } from "$lib/soundboard";
+	import {
+		MIC_PRESETS,
+		NEUTRAL_SOUND_FX,
+		hasSoundFx,
+		playedMs,
+		refreshSoundboard,
+		soundboard,
+		type MicFx,
+		type MicPreset,
+		type Sound,
+		type SoundboardConfig,
+	} from "$lib/soundboard";
 	import SlidersHorizontal from "phosphor-svelte/lib/SlidersHorizontal";
 
 	import { invoke } from "@tauri-apps/api/core";
@@ -206,6 +217,19 @@
 		editSave = setTimeout(() => invoke("sb_update", { sound: e }), 200);
 	}
 	const setMode = (mode: string) => edit({ mode: mode as Sound["mode"] });
+	type SfxKey = "speed" | "pitch" | "bass_db" | "reverb" | "echo" | "distortion";
+	const SOUND_FX_SLIDERS: [SfxKey, string, number, number, number, (v: number) => string][] = [
+		["speed", "Speed · faster = higher", 0.5, 2, 0.05, (v) => `${v.toFixed(2)}×`],
+		["pitch", "Pitch only · keeps the speed", -12, 12, 0.5, (v) => `${v > 0 ? "+" : ""}${v} st`],
+		["bass_db", "Bass boost", 0, 12, 0.5, (v) => `+${v} dB`],
+		["reverb", "Reverb", 0, 1, 0.01, (v) => `${Math.round(v * 100)}%`],
+		["echo", "Echo", 0, 1, 0.01, (v) => `${Math.round(v * 100)}%`],
+		["distortion", "Distortion", 0, 1, 0.01, (v) => `${Math.round(v * 100)}%`],
+	];
+	const sfx = (s: Sound) => ({ ...NEUTRAL_SOUND_FX, ...(s.effects ?? {}) });
+	function setSfx(patch: Partial<typeof NEUTRAL_SOUND_FX>) {
+		if (editing) edit({ effects: { ...sfx(editing), ...patch } });
+	}
 	async function remove(sound: Sound) {
 		if (!(await ask(`Remove "${sound.name}" from the soundboard? Keys that play it will stop working.`, { title: "Remove sound", kind: "warning" }))) return;
 		editing = null;
@@ -584,7 +608,8 @@
 							</button>
 							<div class="flex flex-wrap items-center gap-1.5 px-3 pb-3 text-xs text-neutral-400 whitespace-nowrap">
 								<span>{seconds(playedMs(sound))}</span>
-								{#if playedMs(sound) < sound.duration_ms}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">Trimmed</span>{/if}
+								{#if (sound.start_ms ?? 0) > 0 || sound.end_ms != null}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">Trimmed</span>{/if}
+								{#if hasSoundFx(sound)}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">Effects</span>{/if}
 								{#if sound.mode != "overlap"}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">{MODE_LABEL[sound.mode]}</span>{/if}
 								{#if sound.volume != 1}<span class="px-1.5 rounded bg-neutral-800 text-neutral-300">{pct(sound.volume)}%</span>{/if}
 							</div>
@@ -652,6 +677,47 @@
 		{#key editing.id}
 			<TrimEditor sound={editing} on:change={(e) => edit(e.detail)} />
 		{/key}
+		<div class="flex flex-col gap-2.5">
+			<div class="flex items-center gap-2">
+				<span class="grow text-sm font-semibold text-neutral-200">Effects on this sound</span>
+				<span class="text-xs text-neutral-500">saved with the sound · no extra CPU while playing</span>
+			</div>
+			<div class="grid gap-x-5 gap-y-3 grid-cols-2 md:grid-cols-3">
+				{#each SOUND_FX_SLIDERS as [key, label, min, max, step, fmt]}
+					<label class="flex flex-col gap-1 text-sm text-neutral-300">
+						<span class="flex justify-between"><span>{label}</span><span class="text-xs text-neutral-400 tabular-nums">{fmt(sfx(editing)[key])}</span></span>
+						<input
+							type="range"
+							{min}
+							{max}
+							{step}
+							value={sfx(editing)[key]}
+							on:input={(e) => setSfx({ [key]: +e.currentTarget.value })}
+							on:dblclick={() => setSfx({ [key]: NEUTRAL_SOUND_FX[key] })}
+						/>
+					</label>
+				{/each}
+			</div>
+			<div class="flex flex-wrap items-center gap-2">
+				{#each [["reverse", "Reverse"], ["normalize", "Make louder (normalize)"], ["fade_in", "Fade in"]] as [key, label]}
+					{@const on = !!sfx(editing)[key == "reverse" ? "reverse" : key == "normalize" ? "normalize" : "fade_in"]}
+					<button
+						class="h-8 px-3 rounded-lg border text-sm transition-colors {on
+							? 'bg-[#1D2A44] text-neutral-100'
+							: 'bg-neutral-800 border-neutral-600 text-neutral-300'}"
+						style={on ? "border-color: var(--orvo-accent)" : ""}
+						aria-pressed={on}
+						on:click={() => setSfx({ [key]: !on })}>{label}</button
+					>
+				{/each}
+				<span class="grow"></span>
+				<button
+					class="h-8 px-3 rounded-lg text-sm text-neutral-400 hover:bg-neutral-800 disabled:opacity-40"
+					disabled={!hasSoundFx(editing)}
+					on:click={() => edit({ effects: { ...NEUTRAL_SOUND_FX } })}>Reset effects</button
+				>
+			</div>
+		</div>
 		<div class="flex flex-col gap-1.5">
 			<span class="text-sm text-neutral-400">When pressed again while playing</span>
 			<div role="radiogroup" aria-label="Play mode" class="grid grid-cols-3 gap-1 p-1 rounded-xl bg-neutral-800">

@@ -23,6 +23,7 @@
 	import PropertyInspectorView from "../components/PropertyInspectorView.svelte";
 	import SettingsView from "../components/SettingsView.svelte";
 	import SoundboardView from "../components/SoundboardView.svelte";
+	import MixerView from "../components/MixerView.svelte";
 	import { appView } from "$lib/soundboard";
 
 	let devices: { [id: string]: DeviceInfo } = {};
@@ -75,6 +76,14 @@
 					: 'text-neutral-300 hover:text-neutral-100'}"
 				on:click={() => appView.set("soundboard")}>Soundboard</button
 			>
+			<button
+				role="tab"
+				aria-selected={$appView == "mixer"}
+				class="px-4 h-8 rounded-lg text-sm transition-colors {$appView == 'mixer'
+					? 'bg-neutral-950 text-neutral-100'
+					: 'text-neutral-300 hover:text-neutral-100'}"
+				on:click={() => appView.set("mixer")}>Mixer</button
+			>
 		</div>
 
 		<div class="grow"></div>
@@ -84,8 +93,10 @@
 
 	{#if $appView == "soundboard"}
 		<SoundboardView />
+	{:else if $appView == "mixer"}
+		<MixerView />
 	{/if}
-	<div class="flex flex-row grow min-h-0" class:hidden={$appView == "soundboard"}>
+	<div class="flex flex-row grow min-h-0" class:hidden={$appView != "pad"}>
 		<div class="relative flex shrink-0 min-h-0" style="width: {leftWidth}px">
 			<aside class="flex flex-col w-full bg-neutral-900 border-r border-neutral-700 min-h-0">
 				<div class="p-3">

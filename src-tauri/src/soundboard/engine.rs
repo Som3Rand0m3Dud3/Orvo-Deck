@@ -16,6 +16,7 @@ use cpal::{FromSample, Sample, SizedSample};
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 
+use super::effects::{Chain, EffectSpec};
 use super::fx::{FRAME, MicFx, Processor};
 
 pub const CLIP_RATE: u32 = 48_000;
@@ -61,6 +62,23 @@ pub struct Levels {
 	pub monitor_gain: AtomicU32,
 	/// Main soundboard volume: multiplies both what others hear and what you hear.
 	pub master_gain: AtomicU32,
+	/// The virtual mic's own fader (the whole mix) and mutes.
+	pub out_gain: AtomicU32,
+	pub sound_mute: AtomicBool,
+	pub out_mute: AtomicBool,
+	/// Effects on the voice, the soundboard and the output; bump `chains_ver` after changing.
+	pub chains: Mutex<Chains>,
+	pub chains_ver: std::sync::atomic::AtomicU64,
+	/// Mixer meters (peak dBFS).
+	pub meter_sound: AtomicU32,
+	pub meter_mix: AtomicU32,
+}
+
+#[derive(Clone, Default)]
+pub struct Chains {
+	pub voice: Vec<EffectSpec>,
+	pub sound: Vec<EffectSpec>,
+	pub out: Vec<EffectSpec>,
 }
 
 fn load(a: &AtomicU32) -> f32 {
@@ -312,6 +330,8 @@ pub struct VoiceChain {
 	levels: Arc<Levels>,
 	prod: MicProd,
 	listen: MicProd,
+	effects: Chain,
+	effects_ver: u64,
 }
 
 impl VoiceChain {
@@ -328,6 +348,8 @@ impl VoiceChain {
 			levels,
 			prod,
 			listen,
+			effects: Chain::new(MIC_RATE as f32, 1),
+			effects_ver: u64::MAX,
 		}
 	}
 
@@ -353,6 +375,17 @@ impl VoiceChain {
 			self.proc.set(fx);
 		}
 		self.proc.process(&mut self.frame);
+		// voice changer / voice effects, after the cleanup
+		let ver = self.levels.chains_ver.load(Ordering::Relaxed);
+		if ver != self.effects_ver
+			&& let Ok(c) = self.levels.chains.try_lock()
+		{
+			self.effects.update(&c.voice);
+			self.effects_ver = ver;
+		}
+		if !self.effects.is_empty() {
+			self.effects.process(&mut self.frame);
+		}
 		let m = self.proc.meter;
 		store(&self.levels.meter_level, m.level_db);
 		store(&self.levels.meter_out, m.out_db);
@@ -431,6 +464,10 @@ pub struct Mixer {
 	is_virtual: bool,
 	playing: Arc<Mutex<HashMap<String, usize>>>,
 	finished: Vec<String>,
+	sound_fx: Chain,
+	out_fx: Chain,
+	fx_ver: u64,
+	sb: Vec<f32>,
 }
 
 impl Mixer {
@@ -445,6 +482,10 @@ impl Mixer {
 			is_virtual,
 			playing,
 			finished: Vec::new(),
+			sound_fx: Chain::new(rate as f32, 2),
+			out_fx: Chain::new(rate as f32, 2),
+			fx_ver: u64::MAX,
+			sb: Vec::new(),
 		}
 	}
 
@@ -499,9 +540,25 @@ impl Mixer {
 			)
 		};
 
-		let sound_gain = sound_gain * master;
+		let sound_gain = if self.levels.sound_mute.load(Ordering::Relaxed) { 0.0 } else { sound_gain * master };
+		let (out_gain, out_mute) = (load(&self.levels.out_gain), self.levels.out_mute.load(Ordering::Relaxed));
+		let ver = self.levels.chains_ver.load(Ordering::Relaxed);
+		if ver != self.fx_ver
+			&& let Ok(c) = self.levels.chains.try_lock()
+		{
+			self.sound_fx.update(&c.sound);
+			if self.is_virtual {
+				self.out_fx.update(&c.out);
+			}
+			self.fx_ver = ver;
+		}
+
+		// 1. the sounds, as one stereo bus
+		let frames = data.len() / self.channels;
+		self.sb.clear();
+		self.sb.resize(frames * 2, 0.0);
 		const FADE_IN: f64 = (CLIP_RATE / 200) as f64; // 5 ms, so a trimmed start doesn't click
-		for frame in data.chunks_mut(self.channels) {
+		for n in 0..frames {
 			let (mut l, mut r) = (0.0f32, 0.0f32);
 			for v in self.voices.iter_mut() {
 				let Span { start, end, fade } = v.span;
@@ -536,17 +593,44 @@ impl Mixer {
 				r += (v.clip[i * 2 + 1] * (1.0 - t) + v.clip[j * 2 + 1] * t) * g;
 				v.pos += self.step;
 			}
-			l *= sound_gain;
-			r *= sound_gain;
-			if let Some(mic) = &mut self.mic {
+			self.sb[n * 2] = l;
+			self.sb[n * 2 + 1] = r;
+		}
+		// 2. soundboard effects (also heard in your headphones)
+		if !self.sound_fx.is_empty() {
+			self.sound_fx.process(&mut self.sb);
+		}
+		let mut sound_peak = 0f32;
+		for x in self.sb.iter_mut() {
+			*x *= sound_gain;
+			sound_peak = sound_peak.max(x.abs());
+		}
+		// 3. add your voice, then the output's own effects and fader
+		if let Some(mic) = &mut self.mic {
+			for n in 0..frames {
 				let m = mic.next();
 				if mic_on {
-					l += m * mic_gain;
-					r += m * mic_gain;
+					self.sb[n * 2] += m * mic_gain;
+					self.sb[n * 2 + 1] += m * mic_gain;
 				}
 			}
+		}
+		if self.is_virtual {
+			if !self.out_fx.is_empty() {
+				self.out_fx.process(&mut self.sb);
+			}
+			let g = if out_mute { 0.0 } else { out_gain };
+			let mut mix_peak = 0f32;
+			for x in self.sb.iter_mut() {
+				*x *= g;
+				mix_peak = mix_peak.max(x.abs());
+			}
+			store(&self.levels.meter_sound, 20.0 * sound_peak.max(1e-6).log10());
+			store(&self.levels.meter_mix, 20.0 * mix_peak.max(1e-6).log10());
+		}
+		for (n, frame) in data.chunks_mut(self.channels).enumerate() {
 			// soft limit so stacked sounds never clip harshly
-			let (l, r) = (soft(l), soft(r));
+			let (l, r) = (soft(self.sb[n * 2]), soft(self.sb[n * 2 + 1]));
 			match frame.len() {
 				1 => frame[0] = T::from_sample((l + r) * 0.5),
 				_ => {
@@ -655,6 +739,7 @@ mod tests {
 		store(&levels.mic_gain, 1.0);
 		store(&levels.sound_gain, 1.0);
 		store(&levels.master_gain, 1.0);
+		store(&levels.out_gain, 1.0);
 		let (mut prod, cons) = HeapRb::<f32>::new(48_000).split();
 		for _ in 0..4_000 {
 			let _ = prod.try_push(0.25);
@@ -691,6 +776,7 @@ mod tests {
 		let levels = Arc::new(Levels::default());
 		store(&levels.sound_gain, 1.0);
 		store(&levels.master_gain, 0.5);
+		store(&levels.out_gain, 1.0);
 		let (tx, rx) = channel();
 		let playing = Arc::new(Mutex::new(HashMap::new()));
 		let mut m = Mixer::new(48_000, 2, rx, None, levels, true, playing);

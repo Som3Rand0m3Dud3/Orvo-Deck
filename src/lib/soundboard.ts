@@ -18,9 +18,34 @@ export type Sound = {
 	start_ms: number;
 	end_ms: number | null;
 	fade_out: boolean;
+	effects: SoundFx;
 };
+export type SoundFx = {
+	speed: number;
+	pitch: number;
+	bass_db: number;
+	reverb: number;
+	echo: number;
+	distortion: number;
+	reverse: boolean;
+	normalize: boolean;
+	fade_in: boolean;
+};
+export const NEUTRAL_SOUND_FX: SoundFx = {
+	speed: 1,
+	pitch: 0,
+	bass_db: 0,
+	reverb: 0,
+	echo: 0,
+	distortion: 0,
+	reverse: false,
+	normalize: false,
+	fade_in: false,
+};
+export const hasSoundFx = (s: Sound) => !!s.effects && JSON.stringify({ ...NEUTRAL_SOUND_FX, ...s.effects }) != JSON.stringify(NEUTRAL_SOUND_FX);
 /** How long a sound plays after trimming. */
-export const playedMs = (s: Sound) => Math.max(0, Math.min(s.end_ms ?? s.duration_ms, s.duration_ms) - (s.start_ms ?? 0));
+export const playedMs = (s: Sound) =>
+	Math.max(0, Math.min(s.end_ms ?? s.duration_ms, s.duration_ms) - (s.start_ms ?? 0)) / Math.max(0.25, s.effects?.speed || 1);
 export type SoundboardConfig = {
 	enabled: boolean;
 	mic_device: string | null;
@@ -33,7 +58,136 @@ export type SoundboardConfig = {
 	master_gain: number;
 	mic_preset: MicPreset;
 	mic_fx: MicFx;
+	out_gain: number;
+	out_mute: boolean;
+	sound_mute: boolean;
+	voice_preset: string;
+	voice_fx: EffectSpec[];
+	sound_fx: EffectSpec[];
+	out_fx: EffectSpec[];
+	my_voices: { id: string; name: string; chain: EffectSpec[] }[];
 };
+
+// ---------------- Mixer effects
+export type EffectSpec = { id: string; kind: string; on: boolean; params: { [key: string]: number } };
+type Param = { key: string; label: string; min: number; max: number; step: number; def: number; unit: "%" | "dB" | "ms" | "Hz" | "st" | "x" | "toggle" };
+export const EFFECTS: { [kind: string]: { label: string; desc: string; params: Param[] } } = {
+	pitch: {
+		label: "Pitch",
+		desc: "Deeper or higher voice (adds ~30 ms)",
+		params: [
+			{ key: "semitones", label: "Pitch", min: -12, max: 12, step: 0.5, def: 0, unit: "st" },
+			{ key: "formant", label: "Formant · bigger / smaller", min: -12, max: 12, step: 0.5, def: 0, unit: "st" },
+			{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 1, unit: "%" },
+		],
+	},
+	echo: {
+		label: "Echo",
+		desc: "Repeats, from slap-back to canyon",
+		params: [
+			{ key: "time_ms", label: "Time", min: 20, max: 1000, step: 5, def: 250, unit: "ms" },
+			{ key: "feedback", label: "Repeats", min: 0, max: 0.9, step: 0.01, def: 0.35, unit: "%" },
+			{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 0.3, unit: "%" },
+		],
+	},
+	reverb: {
+		label: "Reverb",
+		desc: "Room, hall, cave, stadium",
+		params: [
+			{ key: "size", label: "Room size", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" },
+			{ key: "damping", label: "Damping · dark", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" },
+			{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 0.25, unit: "%" },
+		],
+	},
+	eq: {
+		label: "EQ",
+		desc: "Bass, mid, treble",
+		params: [
+			{ key: "bass_db", label: "Bass", min: -12, max: 12, step: 0.5, def: 0, unit: "dB" },
+			{ key: "mid_db", label: "Mid", min: -12, max: 12, step: 0.5, def: 0, unit: "dB" },
+			{ key: "treble_db", label: "Treble", min: -12, max: 12, step: 0.5, def: 0, unit: "dB" },
+		],
+	},
+	filter: {
+		label: "Filter",
+		desc: "Low-cut / high-cut: radio, phone, underwater",
+		params: [
+			{ key: "lowcut_hz", label: "Low-cut", min: 20, max: 2000, step: 10, def: 20, unit: "Hz" },
+			{ key: "highcut_hz", label: "High-cut", min: 500, max: 20000, step: 100, def: 20000, unit: "Hz" },
+		],
+	},
+	distortion: {
+		label: "Distortion",
+		desc: "Grit, megaphone, demon",
+		params: [
+			{ key: "drive", label: "Drive", min: 0, max: 1, step: 0.01, def: 0.4, unit: "%" },
+			{ key: "tone", label: "Tone · bright", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" },
+			{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 1, unit: "%" },
+		],
+	},
+	robot: {
+		label: "Robot",
+		desc: "Ring modulator: metallic voice",
+		params: [
+			{ key: "freq_hz", label: "Frequency · lower = buzzier", min: 10, max: 400, step: 1, def: 60, unit: "Hz" },
+			{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 0.8, unit: "%" },
+		],
+	},
+	chorus: {
+		label: "Chorus / Flanger",
+		desc: "Wide, wobbly, alien",
+		params: [
+			{ key: "rate_hz", label: "Speed", min: 0.1, max: 5, step: 0.05, def: 0.8, unit: "Hz" },
+			{ key: "depth", label: "Depth", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" },
+			{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" },
+			{ key: "flanger", label: "Flanger", min: 0, max: 1, step: 1, def: 0, unit: "toggle" },
+		],
+	},
+	compressor: {
+		label: "Compressor",
+		desc: "Evens out loud and quiet",
+		params: [{ key: "amount", label: "Amount", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" }],
+	},
+	limiter: {
+		label: "Limiter",
+		desc: "Never louder than the ceiling",
+		params: [{ key: "ceiling_db", label: "Ceiling", min: -12, max: 0, step: 0.5, def: -1, unit: "dB" }],
+	},
+	leveler: {
+		label: "Loudness leveler",
+		desc: "Quiet and loud material come out even",
+		params: [
+			{ key: "target", label: "Target loudness", min: 0, max: 1, step: 0.01, def: 0.5, unit: "%" },
+			{ key: "speed", label: "Speed", min: 0, max: 1, step: 0.01, def: 0.3, unit: "%" },
+		],
+	},
+};
+export const paramValue = (e: EffectSpec, p: Param) => e.params?.[p.key] ?? p.def;
+export function formatParam(p: Param, v: number): string {
+	switch (p.unit) {
+		case "%":
+			return `${Math.round(v * 100)}%`;
+		case "dB":
+			return `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
+		case "st":
+			return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v)} st`;
+		case "Hz":
+			return v >= 1000 ? `${(v / 1000).toFixed(1)} kHz` : `${v < 10 ? v.toFixed(1) : Math.round(v)} Hz`;
+		case "ms":
+			return `${Math.round(v)} ms`;
+		default:
+			return String(v);
+	}
+}
+export function newEffect(kind: string): EffectSpec {
+	return {
+		id: `${kind}-${Math.random().toString(36).slice(2, 7)}`,
+		kind,
+		on: true,
+		params: Object.fromEntries(EFFECTS[kind].params.map((p) => [p.key, p.def])),
+	};
+}
+export type VoicePreset = { id: string; name: string; hint: string; chain: EffectSpec[] };
 
 export type MicPreset = "off" | "natural" | "isolation" | "studio" | "custom";
 export type MicFx = {
@@ -80,10 +234,11 @@ export type SoundboardState = {
 	playing: string[];
 	cable_installed: boolean;
 	cable_url: string;
+	voice_presets: VoicePreset[];
 };
 
 /** Which page the main window shows: the pad's keys or the soundboard. */
-export const appView: Writable<"pad" | "soundboard"> = writable("pad");
+export const appView: Writable<"pad" | "soundboard" | "mixer"> = writable("pad");
 export const soundboard: Writable<SoundboardState | null> = writable(null);
 
 let pending: Promise<void> | null = null;
@@ -103,15 +258,16 @@ listen("soundboard_levels", ({ payload }: { payload: Partial<SoundboardConfig> }
 
 export const SB_SLIDERS = ["com.ninedeck.device.sbmic", "com.ninedeck.device.sbsound"];
 
-/** A tray cube for one sound: the hidden "Play sound" action carrying which sound it plays. */
-export type SoundAction = Action & { orvoSound?: { id: string; name: string } };
+/** A tray cube that carries its key's settings: a sound to play, a voice to switch to… */
+export type SoundAction = Action & { orvoSound?: { id: string; name: string }; orvoPreset?: { settings: any; title: string } };
 
 /** After a sound cube lands on a key: remember the sound and show its name on the key. */
 export async function finishSoundKey(instance: ActionInstance | null, action: SoundAction): Promise<ActionInstance | null> {
-	if (!instance || !action.orvoSound) return instance;
-	const { id, name } = action.orvoSound;
+	if (!instance || !(action.orvoSound || action.orvoPreset)) return instance;
+	const settings = action.orvoSound ? { sound: action.orvoSound.id } : action.orvoPreset!.settings;
+	const name = action.orvoSound ? action.orvoSound.name : action.orvoPreset!.title;
 	try {
-		const updated = await invoke<ActionInstance>("orvo_set_instance_settings", { context: instance.context, settings: { sound: id } });
+		const updated = await invoke<ActionInstance>("orvo_set_instance_settings", { context: instance.context, settings });
 		const state = { ...updated.states[0], text: name, show: true };
 		await invoke("set_state", { context: instance.context, index: 0, state });
 		updated.states[0] = state;
@@ -123,6 +279,19 @@ export async function finishSoundKey(instance: ActionInstance | null, action: So
 
 /** The plain action (without Orvo's extra field) for the backend. */
 export function plainAction(action: SoundAction): Action {
-	const { orvoSound: _, ...rest } = action;
+	const { orvoSound: _, orvoPreset: __, ...rest } = action;
 	return rest;
 }
+
+/** Saves soundboard / mixer settings (debounced), keeping the page in step right away. */
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+export function updateConfig(patch: Partial<SoundboardConfig>) {
+	soundboard.update((s) => {
+		if (!s) return s;
+		const config = { ...s.config, ...patch };
+		if (saveTimer) clearTimeout(saveTimer);
+		saveTimer = setTimeout(() => invoke("sb_set_config", { config }), 120);
+		return { ...s, config };
+	});
+}
+export const MIXER_ACTIONS = ["com.ninedeck.device.voice", "com.ninedeck.device.voiceoff", "com.ninedeck.device.voicenext", "com.ninedeck.device.voicemute"];

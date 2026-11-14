@@ -193,6 +193,9 @@ async fn main() {
 			soundboard::sb_preview,
 			soundboard::sb_stop,
 			soundboard::sb_waveform,
+			soundboard::sb_set_voice,
+			soundboard::sb_save_voice,
+			soundboard::sb_delete_voice,
 			soundboard::sb_meter,
 		])
 		.setup(|app| {

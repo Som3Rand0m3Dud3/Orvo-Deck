@@ -74,11 +74,17 @@
 	let playhead: number | null = null;
 	let raf = 0;
 	async function preview() {
-		await invoke("sb_preview", { id: sound.id, startMs: start, endMs: end >= total ? null : end, fadeOut: sound.fade_out ?? true });
+		await invoke("sb_preview", {
+			id: sound.id,
+			startMs: start,
+			endMs: end >= total ? null : end,
+			fadeOut: sound.fade_out ?? true,
+			effects: sound.effects ?? null,
+		});
 		playingFrom = performance.now();
 		cancelAnimationFrame(raf);
 		const tickFn = () => {
-			const t = start + (performance.now() - playingFrom);
+			const t = start + (performance.now() - playingFrom) * Math.max(0.25, sound.effects?.speed || 1);
 			if (t >= end) {
 				playhead = null;
 				return;

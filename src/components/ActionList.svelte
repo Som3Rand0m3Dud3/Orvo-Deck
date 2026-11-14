@@ -13,7 +13,7 @@
 	import { PRODUCT_NAME } from "$lib/singletons";
 
 	import { trayScale } from "$lib/tray";
-	import { SB_SLIDERS, SOUND_ACTION, appView, soundboard, type SoundAction } from "$lib/soundboard";
+	import { MIXER_ACTIONS, SB_SLIDERS, SOUND_ACTION, appView, soundboard, type SoundAction } from "$lib/soundboard";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { tick } from "svelte";
@@ -49,18 +49,59 @@
 	$: soundSliders = Object.values(categories)
 		.flatMap((c) => c.actions)
 		.filter((a) => SB_SLIDERS.includes(a.uuid));
-	const cubeKey = (action: SoundAction) => action.plugin + action.uuid + (action.orvoSound?.id ?? "");
+	const cubeKey = (action: SoundAction) => action.plugin + action.uuid + (action.orvoSound?.id ?? "") + (action.orvoPreset?.settings?.preset ?? "");
+
+	// Orvo Mixer: one cube per voice (press to switch it on/off), plus voice controls.
+	const MIXER = "Mixer";
+	$: mixerActions = Object.values(categories)
+		.flatMap((c) => c.actions)
+		.filter((a) => MIXER_ACTIONS.includes(a.uuid));
+	$: voiceAction = mixerActions.find((a) => a.uuid == MIXER_ACTIONS[0]);
+	$: mixerCubes = [
+		...(voiceAction
+			? [
+					...($soundboard?.voice_presets ?? []).filter((p) => p.id != "off").map((p) => ({ id: p.id, name: p.name })),
+					...($soundboard?.config.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name })),
+				].map((p): SoundAction => ({
+					...voiceAction!,
+					name: `Voice: ${p.name}`,
+					tooltip: `Press to switch "${p.name}" on or off (hold mode in the key's settings)`,
+					orvoPreset: { settings: { preset: p.id, mode: "toggle", name: p.name }, title: p.name },
+				}))
+			: []),
+		...mixerActions.filter((a) => a.uuid != MIXER_ACTIONS[0]),
+	];
 
 	let sorted: [string, Category][] = [];
 	$: sorted = [
 		...Object.entries(categories)
 			.map(([name, c]): [string, Category] => [
 				name,
-				{ ...c, actions: c.actions.filter((a) => a.visible_in_action_list !== false && a.uuid != SOUND_ACTION && !SB_SLIDERS.includes(a.uuid)) },
+				{
+					...c,
+					actions: c.actions.filter(
+						(a) => a.visible_in_action_list !== false && a.uuid != SOUND_ACTION && !SB_SLIDERS.includes(a.uuid) && !MIXER_ACTIONS.includes(a.uuid),
+					),
+				},
 			])
 			.filter(([_, { actions }]) => actions.length > 0),
 		...(soundAction ? [[SOUNDBOARD, { icon: soundAction.icon, actions: [...soundSliders, ...soundCubes] }] as [string, Category]] : []),
-	].sort((a, b) => (a[0] == PRODUCT_NAME ? -1 : b[0] == PRODUCT_NAME ? 1 : a[0] == SOUNDBOARD ? -1 : b[0] == SOUNDBOARD ? 1 : a[0].localeCompare(b[0])));
+		...(mixerCubes.length ? [[MIXER, { icon: voiceAction?.icon, actions: mixerCubes }] as [string, Category]] : []),
+	].sort((a, b) =>
+		a[0] == PRODUCT_NAME
+			? -1
+			: b[0] == PRODUCT_NAME
+				? 1
+				: a[0] == SOUNDBOARD
+					? -1
+					: b[0] == SOUNDBOARD
+						? 1
+						: a[0] == MIXER
+							? -1
+							: b[0] == MIXER
+								? 1
+								: a[0].localeCompare(b[0]),
+	);
 
 	const read = (key: string) => {
 		try {

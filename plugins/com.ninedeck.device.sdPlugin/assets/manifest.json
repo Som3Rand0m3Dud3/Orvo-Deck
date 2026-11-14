@@ -2,7 +2,7 @@
 	"Name": "Orvo M1",
 	"Description": "Device support for the Orvo M1 macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.6.1",
+	"Version": "0.7.0",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",
@@ -121,6 +121,75 @@
 			],
 			"SupportedInMultiActions": false,
 			"PropertyInspectorPath": "assets/pi/sbsound.html"
+		},
+		{
+			"Name": "Voice changer",
+			"UUID": "com.ninedeck.device.voice",
+			"Icon": "assets/voice",
+			"Tooltip": "Switches your voice (press to toggle, or hold)",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "assets/voice",
+					"Title": ""
+				}
+			],
+			"SupportedInMultiActions": true,
+			"VisibleInActionsList": false,
+			"PropertyInspectorPath": "assets/pi/voice.html"
+		},
+		{
+			"Name": "Voice effects off",
+			"UUID": "com.ninedeck.device.voiceoff",
+			"Icon": "assets/voice",
+			"Tooltip": "Back to your normal (cleaned-up) voice",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "assets/voice",
+					"Title": ""
+				}
+			],
+			"SupportedInMultiActions": true,
+			"VisibleInActionsList": false
+		},
+		{
+			"Name": "Next voice",
+			"UUID": "com.ninedeck.device.voicenext",
+			"Icon": "assets/voice",
+			"Tooltip": "Steps through the voices",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "assets/voice",
+					"Title": ""
+				}
+			],
+			"SupportedInMultiActions": true,
+			"VisibleInActionsList": false
+		},
+		{
+			"Name": "Mute my voice",
+			"UUID": "com.ninedeck.device.voicemute",
+			"Icon": "assets/voice",
+			"Tooltip": "Turns your voice in the virtual mic on or off",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "assets/voice",
+					"Title": ""
+				}
+			],
+			"SupportedInMultiActions": true,
+			"VisibleInActionsList": false
 		}
 	],
 	"DeviceNamespace": "nd",

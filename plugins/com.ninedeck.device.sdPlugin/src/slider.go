@@ -359,7 +359,8 @@ func handleActionEvent(msg []byte) {
 		return
 	}
 	// Soundboard keys are played by Orvo Studio itself; they are not slider actions.
-	if ev.Action == "com.ninedeck.device.sound" {
+	switch ev.Action {
+	case "com.ninedeck.device.sound", "com.ninedeck.device.voice", "com.ninedeck.device.voiceoff", "com.ninedeck.device.voicenext", "com.ninedeck.device.voicemute":
 		return
 	}
 	switch ev.Event {

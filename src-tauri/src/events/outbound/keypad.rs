@@ -62,6 +62,7 @@ pub async fn key_down(device: &str, key: u8) -> Result<(), anyhow::Error> {
 
 			tokio::time::sleep(Duration::from_millis(100)).await;
 
+			crate::soundboard::on_key_up(&child.action.uuid, &child.settings);
 			send_to_plugin(
 				&child.action.plugin,
 				&KeyEvent {
@@ -161,6 +162,7 @@ pub async fn key_up(device: &str, key: u8) -> Result<(), anyhow::Error> {
 			return Ok(());
 		}
 		let child = &children[index];
+		crate::soundboard::on_key_up(&child.action.uuid, &child.settings);
 		send_to_plugin(
 			&child.action.plugin,
 			&KeyEvent {
@@ -177,6 +179,7 @@ pub async fn key_up(device: &str, key: u8) -> Result<(), anyhow::Error> {
 		if instance.states.len() == 2 && !instance.action.disable_automatic_states {
 			instance.current_state = (instance.current_state + 1) % (instance.states.len() as u16);
 		}
+		crate::soundboard::on_key_up(&instance.action.uuid, &instance.settings);
 		send_to_plugin(
 			&instance.action.plugin,
 			&KeyEvent {

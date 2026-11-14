@@ -4,8 +4,10 @@
 //! Files: <config>/soundboard/sounds.json, settings.json and files/<id>.<ext>.
 
 pub mod decode;
+pub mod effects;
 pub mod engine;
 pub mod fx;
+pub mod render;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,9 @@ pub struct Sound {
 	/// Short fade at the (trimmed) end so it never stops with a click.
 	#[serde(default = "yes")]
 	pub fade_out: bool,
+	/// Effects baked into this sound.
+	#[serde(default)]
+	pub effects: render::SoundFx,
 }
 
 impl Sound {
@@ -88,6 +93,39 @@ pub struct Config {
 	pub mic_preset: String,
 	#[serde(default)]
 	pub mic_fx: fx::MicFx,
+	/// Mixer: the virtual mic's own fader and mutes.
+	#[serde(default = "one")]
+	pub out_gain: f32,
+	#[serde(default)]
+	pub out_mute: bool,
+	#[serde(default)]
+	pub sound_mute: bool,
+	/// Voice changer: preset id ("off", "deep"…, "my:<id>" or "custom") and its effects.
+	#[serde(default = "off")]
+	pub voice_preset: String,
+	#[serde(default)]
+	pub voice_fx: Vec<effects::EffectSpec>,
+	#[serde(default)]
+	pub sound_fx: Vec<effects::EffectSpec>,
+	#[serde(default = "default_out_fx")]
+	pub out_fx: Vec<effects::EffectSpec>,
+	/// Voices the user saved ("Save as preset").
+	#[serde(default)]
+	pub my_voices: Vec<MyVoice>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MyVoice {
+	pub id: String,
+	pub name: String,
+	pub chain: Vec<effects::EffectSpec>,
+}
+
+fn off() -> String {
+	"off".into()
+}
+fn default_out_fx() -> Vec<effects::EffectSpec> {
+	vec![effects::EffectSpec::new("limiter", &[("ceiling_db", -1.0)])]
 }
 fn studio() -> String {
 	"studio".into()
@@ -107,7 +145,12 @@ impl Default for Config {
 struct State {
 	sounds: Vec<Sound>,
 	config: Config,
+	/// rendered sounds (trim + effects baked in), by id
 	clips: HashMap<String, Clip>,
+	/// decoded files, by id
+	raw: HashMap<String, Clip>,
+	/// the voice before a "hold" key took over
+	held_from: Option<String>,
 	engine: Option<Engine>,
 	loaded: bool,
 }
@@ -117,6 +160,8 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
 		sounds: Vec::new(),
 		config: Config::default(),
 		clips: HashMap::new(),
+		raw: HashMap::new(),
+		held_from: None,
 		engine: None,
 		loaded: false,
 	})
@@ -167,6 +212,18 @@ fn apply_levels(st: &State) {
 		if let Ok(mut fx) = engine.fx.lock() {
 			*fx = c.mic_fx;
 		}
+		store(&l.out_gain, c.out_gain.clamp(0.0, 2.0));
+		l.out_mute.store(c.out_mute, std::sync::atomic::Ordering::Relaxed);
+		l.sound_mute.store(c.sound_mute, std::sync::atomic::Ordering::Relaxed);
+		let want = engine::Chains {
+			voice: c.voice_fx.clone(),
+			sound: c.sound_fx.clone(),
+			out: c.out_fx.clone(),
+		};
+		if let Ok(mut chains) = l.chains.lock() {
+			*chains = want;
+		}
+		l.chains_ver.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	}
 }
 
@@ -265,15 +322,41 @@ pub fn set_level(which: &str, value: f32) {
 	}
 }
 
-fn clip_for(st: &mut State, id: &str) -> anyhow::Result<(Clip, Sound)> {
+fn raw_for(st: &mut State, id: &str) -> anyhow::Result<(Clip, Sound)> {
 	let sound = st.sounds.iter().find(|s| s.id == id).cloned().ok_or_else(|| anyhow::anyhow!("sound not found"))?;
-	if let Some(c) = st.clips.get(id) {
+	if let Some(c) = st.raw.get(id) {
 		return Ok((c.clone(), sound));
 	}
 	let data = decode::decode(&files_dir().join(&sound.file))?;
 	let clip: Clip = std::sync::Arc::new(data);
+	st.raw.insert(id.to_owned(), clip.clone());
+	Ok((clip, sound))
+}
+
+/// The sound as it plays: trimmed, with its own effects baked in.
+fn render_sound(raw: &[f32], sound: &Sound) -> Clip {
+	let s = sound.span(raw.len() / 2);
+	if sound.effects.is_neutral() {
+		return std::sync::Arc::new(raw[s.start * 2..s.end * 2].to_vec());
+	}
+	std::sync::Arc::new(render::render(raw, s.start, s.end, &sound.effects))
+}
+
+fn clip_for(st: &mut State, id: &str) -> anyhow::Result<(Clip, Sound)> {
+	if let (Some(c), Some(sound)) = (st.clips.get(id), st.sounds.iter().find(|s| s.id == id)) {
+		return Ok((c.clone(), sound.clone()));
+	}
+	let (raw, sound) = raw_for(st, id)?;
+	let clip = render_sound(&raw, &sound);
 	st.clips.insert(id.to_owned(), clip.clone());
 	Ok((clip, sound))
+}
+
+/// What a clip from `clip_for` plays: all of it, with the sound's fade-out.
+fn full_span(clip: &Clip, sound: &Sound) -> Span {
+	let end = clip.len() / 2;
+	let fade = if sound.fade_out { (engine::CLIP_RATE as usize * 3 / 100).min(end / 2) } else { 0 };
+	Span { start: 0, end, fade }
 }
 
 pub fn play(id: &str) -> anyhow::Result<()> {
@@ -284,7 +367,7 @@ pub fn play(id: &str) -> anyhow::Result<()> {
 		restart(&mut st);
 	}
 	let (clip, sound) = clip_for(&mut st, id)?;
-	let span = sound.span(clip.len() / 2);
+	let span = full_span(&clip, &sound);
 	let engine = st.engine.as_ref().unwrap();
 	let is_playing = engine.playing.lock().unwrap().contains_key(id);
 	let gain = sound.volume.clamp(0.0, 2.0);
@@ -317,10 +400,101 @@ pub fn play(id: &str) -> anyhow::Result<()> {
 }
 
 /// Plays the sound chosen on a pad key, if this is a soundboard key.
+pub const VOICE_ACTION: &str = "com.ninedeck.device.voice";
+pub const VOICE_OFF_ACTION: &str = "com.ninedeck.device.voiceoff";
+pub const VOICE_NEXT_ACTION: &str = "com.ninedeck.device.voicenext";
+pub const VOICE_MUTE_ACTION: &str = "com.ninedeck.device.voicemute";
+
+/// Every voice you can switch to: the built-in presets, then your saved ones.
+fn voice_ids(c: &Config) -> Vec<String> {
+	effects::VOICE_PRESETS
+		.iter()
+		.map(|p| p.id.to_string())
+		.chain(c.my_voices.iter().map(|v| format!("my:{}", v.id)))
+		.collect()
+}
+
+fn chain_for(c: &Config, id: &str) -> Option<Vec<effects::EffectSpec>> {
+	if let Some(my) = id.strip_prefix("my:") {
+		return c.my_voices.iter().find(|v| v.id == my).map(|v| v.chain.clone());
+	}
+	effects::preset_chain(id)
+}
+
+/// Switches the voice changer (from a pad key or the app).
+pub fn set_voice(id: &str) -> bool {
+	let mut st = STATE.lock().unwrap();
+	load(&mut st);
+	let Some(chain) = chain_for(&st.config, id) else { return false };
+	st.config.voice_preset = id.to_owned();
+	st.config.voice_fx = chain;
+	apply_levels(&st);
+	save(&st);
+	drop(st);
+	notify();
+	true
+}
+
+fn on_voice_key(action_uuid: &str, settings: &serde_json::Value, down: bool) {
+	let preset = settings.get("preset").and_then(|v| v.as_str()).unwrap_or("deep").to_owned();
+	let hold = settings.get("mode").and_then(|v| v.as_str()) == Some("hold");
+	let (current, ids, mic_on) = {
+		let mut st = STATE.lock().unwrap();
+		load(&mut st);
+		(st.config.voice_preset.clone(), voice_ids(&st.config), st.config.mic_on)
+	};
+	match action_uuid {
+		VOICE_ACTION if hold => {
+			if down {
+				STATE.lock().unwrap().held_from = Some(current);
+				set_voice(&preset);
+			} else {
+				let back = STATE.lock().unwrap().held_from.take().unwrap_or_else(|| "off".into());
+				if !set_voice(&back) {
+					set_voice("off");
+				}
+			}
+		}
+		VOICE_ACTION if down => {
+			set_voice(if current == preset { "off" } else { &preset });
+		}
+		VOICE_OFF_ACTION if down => {
+			set_voice("off");
+		}
+		VOICE_NEXT_ACTION if down => {
+			let i = ids.iter().position(|x| *x == current).map(|i| (i + 1) % ids.len()).unwrap_or(1);
+			set_voice(&ids[i]);
+		}
+		VOICE_MUTE_ACTION if down => {
+			let mut st = STATE.lock().unwrap();
+			st.config.mic_on = !mic_on;
+			apply_levels(&st);
+			save(&st);
+			drop(st);
+			notify();
+		}
+		_ => {}
+	}
+}
+
+/// A pad key was released: "hold" voice keys switch back.
+pub fn on_key_up(action_uuid: &str, settings: &serde_json::Value) {
+	if action_uuid == VOICE_ACTION {
+		let (a, s) = (action_uuid.to_owned(), settings.clone());
+		std::thread::spawn(move || on_voice_key(&a, &s, false));
+	}
+}
+
 pub fn on_key_down(action_uuid: &str, settings: &serde_json::Value) {
+	if matches!(action_uuid, VOICE_ACTION | VOICE_OFF_ACTION | VOICE_NEXT_ACTION | VOICE_MUTE_ACTION) {
+		let (a, s) = (action_uuid.to_owned(), settings.clone());
+		std::thread::spawn(move || on_voice_key(&a, &s, true));
+		return;
+	}
 	if action_uuid != SOUND_ACTION {
 		return;
 	}
+
 	if let Some(id) = settings.get("sound").and_then(|v| v.as_str()) {
 		let id = id.to_owned();
 		std::thread::spawn(move || {
@@ -347,6 +521,7 @@ pub struct SoundboardState {
 	playing: Vec<String>,
 	cable_installed: bool,
 	cable_url: &'static str,
+	voice_presets: Vec<serde_json::Value>,
 }
 
 #[command]
@@ -368,6 +543,10 @@ pub fn sb_state() -> SoundboardState {
 		playing,
 		cable_installed,
 		cable_url: CABLE_URL,
+		voice_presets: effects::VOICE_PRESETS
+			.iter()
+			.map(|p| serde_json::json!({ "id": p.id, "name": p.name, "hint": p.hint, "chain": (p.chain)() }))
+			.collect(),
 	}
 }
 
@@ -417,10 +596,11 @@ fn add_one(file_name: &str, bytes: &[u8]) -> anyhow::Result<Sound> {
 		start_ms: 0,
 		end_ms: None,
 		fade_out: true,
+		effects: Default::default(),
 	};
 	let mut st = STATE.lock().unwrap();
 	load(&mut st);
-	st.clips.insert(id, std::sync::Arc::new(data));
+	st.raw.insert(id, std::sync::Arc::new(data));
 	st.sounds.push(sound.clone());
 	save(&st);
 	Ok(sound)
@@ -510,6 +690,9 @@ pub fn sb_update(sound: Sound) -> Result<(), Error> {
 	s.end_ms = sound.end_ms.map(|e| e.min(full)).filter(|e| *e < full);
 	s.start_ms = sound.start_ms.min(s.end_ms.unwrap_or(full).saturating_sub(20));
 	s.fade_out = sound.fade_out;
+	s.effects = sound.effects;
+	let id = s.id.clone();
+	st.clips.remove(&id);
 	save(&st);
 	drop(st);
 	notify();
@@ -537,6 +720,7 @@ pub fn sb_remove(id: String) {
 		let _ = std::fs::remove_file(files_dir().join(&s.file));
 	}
 	st.clips.remove(&id);
+	st.raw.remove(&id);
 	save(&st);
 	drop(st);
 	notify();
@@ -551,7 +735,7 @@ pub async fn sb_play(id: String) -> Result<(), Error> {
 /// Plays a sound (trimmed) in your headphones only, for the edit window. The key is
 /// "preview:<id>" so it never counts as the tile playing.
 #[command]
-pub async fn sb_preview(id: String, start_ms: u64, end_ms: Option<u64>, fade_out: bool) -> Result<(), Error> {
+pub async fn sb_preview(id: String, start_ms: u64, end_ms: Option<u64>, fade_out: bool, effects: Option<render::SoundFx>) -> Result<(), Error> {
 	tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
 		let mut st = STATE.lock().unwrap();
 		load(&mut st);
@@ -559,9 +743,16 @@ pub async fn sb_preview(id: String, start_ms: u64, end_ms: Option<u64>, fade_out
 			st.config.enabled = true;
 			restart(&mut st);
 		}
-		let (clip, sound) = clip_for(&mut st, &id)?;
-		let trial = Sound { start_ms, end_ms, fade_out, ..sound };
-		let span = trial.span(clip.len() / 2);
+		let (raw, sound) = raw_for(&mut st, &id)?;
+		let trial = Sound {
+			start_ms,
+			end_ms,
+			fade_out,
+			effects: effects.unwrap_or(sound.effects.clone()),
+			..sound
+		};
+		let clip = render_sound(&raw, &trial);
+		let span = full_span(&clip, &trial);
 		let engine = st.engine.as_ref().unwrap();
 		let key = format!("preview:{id}");
 		engine.send(VoiceCmd::Stop(key.clone()));
@@ -594,7 +785,7 @@ pub async fn sb_waveform(id: String, points: usize) -> Result<Vec<f32>, Error> {
 	let peaks = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<f32>> {
 		let mut st = STATE.lock().unwrap();
 		load(&mut st);
-		let (clip, _) = clip_for(&mut st, &id)?;
+		let (clip, _) = raw_for(&mut st, &id)?;
 		drop(st);
 		let frames = clip.len() / 2;
 		let points = points.clamp(16, 2000);
@@ -670,6 +861,8 @@ pub struct MeterReading {
 	gate_open: bool,
 	voice: f32,
 	running: bool,
+	sound_db: f32,
+	mix_db: f32,
 }
 
 /// Live mic meter for the Your mic card.
@@ -686,6 +879,8 @@ pub fn sb_meter() -> MeterReading {
 				gate_open: l.meter_gate.load(std::sync::atomic::Ordering::Relaxed),
 				voice: get(&l.meter_voice),
 				running: e.status.lock().unwrap().mic_name.is_some(),
+				sound_db: get(&l.meter_sound),
+				mix_db: get(&l.meter_mix),
 			}
 		}
 		None => MeterReading {
@@ -694,6 +889,8 @@ pub fn sb_meter() -> MeterReading {
 			gate_open: false,
 			voice: 0.0,
 			running: false,
+			sound_db: -120.0,
+			mix_db: -120.0,
 		},
 	}
 }
@@ -706,4 +903,43 @@ pub fn sb_refresh() {
 	st.config.enabled = true;
 	save(&st);
 	restart(&mut st);
+}
+
+/// Switch the voice changer from the app.
+#[command]
+pub fn sb_set_voice(id: String) -> bool {
+	set_voice(&id)
+}
+
+/// "Save as preset": keeps the current voice effects under a name.
+#[command]
+pub fn sb_save_voice(name: String) -> String {
+	let mut st = STATE.lock().unwrap();
+	load(&mut st);
+	let id = new_id();
+	let name: String = name.trim().chars().take(40).collect();
+	let chain = st.config.voice_fx.clone();
+	st.config.my_voices.push(MyVoice {
+		id: id.clone(),
+		name: if name.is_empty() { "My voice".into() } else { name },
+		chain,
+	});
+	st.config.voice_preset = format!("my:{id}");
+	save(&st);
+	drop(st);
+	notify();
+	id
+}
+
+#[command]
+pub fn sb_delete_voice(id: String) {
+	let mut st = STATE.lock().unwrap();
+	load(&mut st);
+	st.config.my_voices.retain(|v| v.id != id);
+	if st.config.voice_preset == format!("my:{id}") {
+		st.config.voice_preset = "custom".into();
+	}
+	save(&st);
+	drop(st);
+	notify();
 }

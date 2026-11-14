@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #12151b; }
+body { padding: 12px; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; color: #d4d8e0; }
+label { display: block; margin: 0 0 6px; color: #8a91a0; }
+select { width: 100%; height: 34px; margin-bottom: 12px; border-radius: 8px; border: 1px solid #2e3440; background: #1a1f28; color: #e6e8ee; font: inherit; padding: 0 8px; }
+p { margin: 0; color: #8a91a0; line-height: 1.4; }
+</style>
+</head>
+<body>
+<label for="preset">Voice</label>
+<select id="preset">
+	<option value="deep">Deep</option><option value="demon">Demon</option><option value="chipmunk">Chipmunk</option>
+	<option value="robot">Robot</option><option value="radio">Radio</option><option value="telephone">Telephone</option>
+	<option value="megaphone">Megaphone</option><option value="cave">Cave</option><option value="echo">Echo</option>
+	<option value="alien">Alien</option><option value="underwater">Underwater</option><option value="ghost">Ghost</option>
+</select>
+<label for="mode">When pressed</label>
+<select id="mode">
+	<option value="toggle">Press: on / off</option>
+	<option value="hold">Hold: only while held</option>
+</select>
+<p>Your own saved voices can be picked in Orvo's Mixer tab and put on a key from the actions panel.</p>
+<script>
+let ws, uuid, settings = {};
+const preset = document.getElementById("preset"), mode = document.getElementById("mode");
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+	uuid = inUUID;
+	try { settings = JSON.parse(actionInfo).payload.settings || {}; } catch (e) {}
+	if (settings.preset && ![...preset.options].some((o) => o.value === settings.preset)) {
+		const o = document.createElement("option"); o.value = settings.preset; o.textContent = settings.name || "My voice"; preset.appendChild(o);
+	}
+	preset.value = settings.preset || "deep";
+	mode.value = settings.mode || "toggle";
+	ws = new WebSocket("ws://127.0.0.1:" + port);
+	ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
+}
+function save() {
+	settings.preset = preset.value;
+	settings.mode = mode.value;
+	if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+}
+preset.addEventListener("change", save);
+mode.addEventListener("change", save);
+</script>
+</body>
+</html>
