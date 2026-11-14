@@ -196,6 +196,7 @@ async fn main() {
 			soundboard::sb_set_voice,
 			soundboard::sb_save_voice,
 			soundboard::sb_delete_voice,
+			soundboard::sb_set_tweak,
 			soundboard::online::sb_online_search,
 			soundboard::online::sb_online_add,
 			frontend::orvo_kv_get,

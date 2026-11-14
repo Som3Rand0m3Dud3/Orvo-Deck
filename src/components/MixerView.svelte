@@ -9,7 +9,6 @@
 	import Microphone from "phosphor-svelte/lib/Microphone";
 	import Plus from "phosphor-svelte/lib/Plus";
 	import SpeakerHigh from "phosphor-svelte/lib/SpeakerHigh";
-	import Trash from "phosphor-svelte/lib/Trash";
 	import X from "phosphor-svelte/lib/X";
 
 	import {
@@ -110,7 +109,8 @@
 	$: chain = config ? ((config[FX_KEY[selected]] as EffectSpec[]) ?? []) : [];
 	function setChain(next: EffectSpec[]) {
 		const patch: Partial<SoundboardConfig> = { [FX_KEY[selected]]: next };
-		if (selected == "voice") patch.voice_preset = "custom";
+		// your own effects and the voice changer don't mix: editing them turns the voice off
+		if (selected == "voice" && config?.voice_preset != "off") patch.voice_preset = "off";
 		updateConfig(patch);
 	}
 	const setEffect = (i: number, e: EffectSpec) => setChain(chain.map((x, n) => (n == i ? e : x)));
@@ -140,7 +140,7 @@
 		...(config?.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name, hint: "Your saved voice", mine: true })),
 	];
 	const iconUrl = (id: string, name: string) => voiceIcon(id, name).replace(/^opendeck\//, "/");
-	$: currentHint = presets.find((p) => p.id == config?.voice_preset)?.hint ?? "Your own mix. Save it as a preset to keep it.";
+	$: activeVoice = config?.voice_preset && config.voice_preset != "off" ? presets.find((p) => p.id == config!.voice_preset) : undefined;
 	async function pickVoice(id: string) {
 		await invoke("sb_set_voice", { id });
 		refreshSoundboard();
@@ -151,10 +151,6 @@
 		naming = false;
 		await invoke("sb_save_voice", { name: newName });
 		newName = "";
-		refreshSoundboard();
-	}
-	async function deleteVoice(id: string) {
-		await invoke("sb_delete_voice", { id: id.slice(3) });
 		refreshSoundboard();
 	}
 
@@ -299,7 +295,7 @@
 					>
 					<button
 						class="flex items-center gap-1.5 px-3 h-9 rounded-lg text-sm text-neutral-200 bg-neutral-800 border border-neutral-600 hover:bg-neutral-700"
-						on:click={() => (naming = true)}><FloppyDisk size="15" /> Save as preset</button
+						on:click={() => (naming = true)}><FloppyDisk size="15" /> Save as my voice</button
 					>
 				{/if}
 				<button
@@ -310,39 +306,20 @@
 			</div>
 
 			{#if selected == "voice"}
-				<div class="flex flex-col gap-2">
-					<span class="text-[11px] font-semibold tracking-wider uppercase text-neutral-400">Voice changer</span>
-					<div role="radiogroup" aria-label="Voice changer" class="flex flex-wrap gap-2">
-						{#each presets as p (p.id)}
-							{@const on = config.voice_preset == p.id}
-							<span class="relative group">
-								<button
-									role="radio"
-									aria-checked={on}
-									title={p.hint}
-									class="flex items-center gap-2 h-10 pl-1.5 pr-3.5 rounded-full border text-sm transition-colors {on
-										? 'bg-[#1D2A44] text-neutral-100'
-										: 'bg-neutral-800 border-neutral-600 text-neutral-300 hover:text-neutral-100'} {p.mine ? 'pr-8' : ''}"
-									style={on ? "border-color: var(--orvo-accent)" : ""}
-									on:click={() => pickVoice(p.id)}><img src={iconUrl(p.id, p.name)} alt="" class="w-6 h-6 rounded-md" />{p.name}</button
-								>
-								{#if p.mine}
-									<button
-										class="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-neutral-400 hover:text-red-300"
-										aria-label="Delete {p.name}"
-										on:click={() => deleteVoice(p.id)}><Trash size="12" /></button
-									>
-								{/if}
-							</span>
-						{/each}
-						{#if config.voice_preset == "custom"}
-							<span class="h-9 px-3.5 flex items-center rounded-full border bg-[#1D2A44] text-sm text-neutral-100" style="border-color: var(--orvo-accent)"
-								>Custom</span
-							>
-						{/if}
+				{#if activeVoice}
+					<div
+						role="status"
+						class="flex flex-wrap items-center gap-3 px-3.5 py-2.5 rounded-xl border bg-[#1D2A44] text-sm text-neutral-100"
+						style="border-color: var(--orvo-accent)"
+					>
+						<img src={iconUrl(activeVoice.id, activeVoice.name)} alt="" class="w-8 h-8 rounded-lg" />
+						<span class="grow">Voice changer on: <strong>{activeVoice.name}</strong>. <span class="text-neutral-300">Your effects below are paused.</span></span>
+						<button class="underline" style="color: #7FA8FF" on:click={() => appView.set("voices")}>Voices</button>
+						<button class="px-3 h-8 rounded-lg text-sm text-neutral-100 bg-neutral-800 border border-neutral-600 hover:bg-neutral-700" on:click={() => pickVoice("off")}
+							>Turn off</button
+						>
 					</div>
-					<p class="text-xs text-neutral-400">{currentHint}</p>
-				</div>
+				{/if}
 				<div class="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-neutral-950/60 border border-neutral-700 text-sm text-neutral-300">
 					<Microphone size="15" class="text-neutral-400" />
 					<span class="grow"
@@ -355,7 +332,7 @@
 				</div>
 			{/if}
 
-			<div class="flex flex-col gap-3">
+			<div class="flex flex-col gap-3 transition-opacity" class:opacity-50={selected == "voice" && !!activeVoice}>
 				{#each chain as e, i (e.id)}
 					{@const def = EFFECTS[e.kind]}
 					<!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -440,7 +417,7 @@
 						on:click={() => (adding = true)}
 					>
 						<Plus size="28" />
-						<span>No effects yet: add one{selected == "voice" ? " or pick a voice above" : ""}</span>
+						<span>No effects yet: add one{selected == "voice" ? " or pick a voice in the Voices tab" : ""}</span>
 					</button>
 				{/each}
 			</div>
@@ -490,7 +467,7 @@
 							class="h-10 px-3 rounded-lg bg-neutral-800 border border-neutral-600 text-neutral-100"
 						/>
 					</label>
-					<p class="text-xs text-neutral-500">It appears with the other voices, and you can put it on a pad key from the actions panel's Mixer tab.</p>
+					<p class="text-xs text-neutral-500">It appears in the Voices tab, and you can put it on a pad key from the actions panel's Voices tab.</p>
 					<div class="flex justify-end gap-2">
 						<button type="button" class="px-3 h-9 rounded-lg text-sm text-neutral-300 hover:bg-neutral-800" on:click={() => (naming = false)}>Cancel</button>
 						<button type="submit" class="px-4 h-9 rounded-lg text-sm font-semibold text-white" style="background: var(--orvo-accent)">Save</button>

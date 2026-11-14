@@ -53,8 +53,8 @@
 		.filter((a) => SB_SLIDERS.includes(a.uuid));
 	const cubeKey = (action: SoundAction) => action.plugin + action.uuid + (action.orvoSound?.id ?? "") + (action.orvoPreset?.settings?.preset ?? "");
 
-	// Orvo Mixer: one cube per voice (press to switch it on/off), plus voice controls.
-	const MIXER = "Mixer";
+	// Orvo Voices: one cube per voice (press to switch it on/off), plus voice controls.
+	const MIXER = "Voices";
 	$: mixerActions = Object.values(categories)
 		.flatMap((c) => c.actions)
 		.filter((a) => MIXER_ACTIONS.includes(a.uuid));

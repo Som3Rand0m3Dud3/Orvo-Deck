@@ -23,6 +23,7 @@
 	import PropertyInspectorView from "../components/PropertyInspectorView.svelte";
 	import SettingsView from "../components/SettingsView.svelte";
 	import SoundboardView from "../components/SoundboardView.svelte";
+	import VoicesView from "../components/VoicesView.svelte";
 	import MixerView from "../components/MixerView.svelte";
 	import { appView } from "$lib/soundboard";
 
@@ -84,6 +85,14 @@
 					: 'text-neutral-300 hover:text-neutral-100'}"
 				on:click={() => appView.set("mixer")}>Mixer</button
 			>
+			<button
+				role="tab"
+				aria-selected={$appView == "voices"}
+				class="px-4 h-8 rounded-lg text-sm transition-colors {$appView == 'voices'
+					? 'bg-neutral-950 text-neutral-100'
+					: 'text-neutral-300 hover:text-neutral-100'}"
+				on:click={() => appView.set("voices")}>Voices</button
+			>
 		</div>
 
 		<div class="grow"></div>
@@ -95,6 +104,8 @@
 		<SoundboardView />
 	{:else if $appView == "mixer"}
 		<MixerView />
+	{:else if $appView == "voices"}
+		<VoicesView />
 	{/if}
 	<div class="flex flex-row grow min-h-0" class:hidden={$appView != "pad"}>
 		<div class="relative flex shrink-0 min-h-0" style="width: {leftWidth}px">

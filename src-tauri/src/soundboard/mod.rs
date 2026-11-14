@@ -101,7 +101,8 @@ pub struct Config {
 	pub out_mute: bool,
 	#[serde(default)]
 	pub sound_mute: bool,
-	/// Voice changer: preset id ("off", "deep"…, "my:<id>" or "custom") and its effects.
+	/// Voice changer: preset id ("off", "deep"… or "my:<id>"). When it is not "off" the manual
+	/// voice effects (`voice_fx`) are paused.
 	#[serde(default = "off")]
 	pub voice_preset: String,
 	#[serde(default)]
@@ -113,6 +114,12 @@ pub struct Config {
 	/// Voices the user saved ("Save as preset").
 	#[serde(default)]
 	pub my_voices: Vec<MyVoice>,
+	/// Per-voice pitch/strength tweaks, by voice id.
+	#[serde(default)]
+	pub voice_tweaks: std::collections::HashMap<String, effects::Tweak>,
+	/// Since 0.8.0 `voice_fx` holds only the manual effects; the voice changer is separate.
+	#[serde(default)]
+	pub voices_v2: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -186,6 +193,16 @@ fn load(st: &mut State) {
 	if let Ok(text) = std::fs::read_to_string(dir().join("settings.json")) {
 		st.config = serde_json::from_str(&text).unwrap_or_default();
 	}
+	if !st.config.voices_v2 {
+		// before 0.8.0 a chosen voice was copied into the manual effects
+		let c = &mut st.config;
+		if c.voice_preset == "custom" {
+			c.voice_preset = "off".into();
+		} else if c.voice_preset != "off" {
+			c.voice_fx.clear();
+		}
+		c.voices_v2 = true;
+	}
 }
 
 fn save(st: &State) {
@@ -217,7 +234,7 @@ fn apply_levels(st: &State) {
 		l.out_mute.store(c.out_mute, std::sync::atomic::Ordering::Relaxed);
 		l.sound_mute.store(c.sound_mute, std::sync::atomic::Ordering::Relaxed);
 		let want = engine::Chains {
-			voice: c.voice_fx.clone(),
+			voice: active_voice_chain(c),
 			sound: c.sound_fx.clone(),
 			out: c.out_fx.clone(),
 		};
@@ -422,13 +439,24 @@ fn chain_for(c: &Config, id: &str) -> Option<Vec<effects::EffectSpec>> {
 	effects::preset_chain(id)
 }
 
-/// Switches the voice changer (from a pad key or the app).
+/// What the voice chain runs: the chosen voice (with its tweak), or the manual effects when no voice is on.
+fn active_voice_chain(c: &Config) -> Vec<effects::EffectSpec> {
+	if c.voice_preset != "off" {
+		if let Some(chain) = chain_for(c, &c.voice_preset) {
+			return effects::tweak_chain(chain, c.voice_tweaks.get(&c.voice_preset).copied().unwrap_or_default());
+		}
+	}
+	c.voice_fx.clone()
+}
+
+/// Switches the voice changer (from a pad key or the app). The manual effects pause while a voice is on.
 pub fn set_voice(id: &str) -> bool {
 	let mut st = STATE.lock().unwrap();
 	load(&mut st);
-	let Some(chain) = chain_for(&st.config, id) else { return false };
+	if chain_for(&st.config, id).is_none() {
+		return false;
+	}
 	st.config.voice_preset = id.to_owned();
-	st.config.voice_fx = chain;
 	apply_levels(&st);
 	save(&st);
 	drop(st);
@@ -912,20 +940,22 @@ pub fn sb_set_voice(id: String) -> bool {
 	set_voice(&id)
 }
 
-/// "Save as preset": keeps the current voice effects under a name.
+/// "Save as my voice": keeps the current sound under a name — the chosen voice with its
+/// tweak, or the manual effects when no voice is on.
 #[command]
 pub fn sb_save_voice(name: String) -> String {
 	let mut st = STATE.lock().unwrap();
 	load(&mut st);
 	let id = new_id();
 	let name: String = name.trim().chars().take(40).collect();
-	let chain = st.config.voice_fx.clone();
+	let chain = active_voice_chain(&st.config);
 	st.config.my_voices.push(MyVoice {
 		id: id.clone(),
 		name: if name.is_empty() { "My voice".into() } else { name },
 		chain,
 	});
 	st.config.voice_preset = format!("my:{id}");
+	apply_levels(&st);
 	save(&st);
 	drop(st);
 	notify();
@@ -937,9 +967,31 @@ pub fn sb_delete_voice(id: String) {
 	let mut st = STATE.lock().unwrap();
 	load(&mut st);
 	st.config.my_voices.retain(|v| v.id != id);
+	st.config.voice_tweaks.remove(&format!("my:{id}"));
 	if st.config.voice_preset == format!("my:{id}") {
-		st.config.voice_preset = "custom".into();
+		st.config.voice_preset = "off".into();
 	}
+	apply_levels(&st);
+	save(&st);
+	drop(st);
+	notify();
+}
+
+/// "Tweak a voice": pitch (semitones) and strength (0..1) for one voice. Default values clear it.
+#[command]
+pub fn sb_set_tweak(id: String, pitch: f32, amount: f32) {
+	let mut st = STATE.lock().unwrap();
+	load(&mut st);
+	let t = effects::Tweak {
+		pitch: pitch.clamp(-12.0, 12.0),
+		amount: amount.clamp(0.0, 1.0),
+	};
+	if t == effects::Tweak::default() {
+		st.config.voice_tweaks.remove(&id);
+	} else {
+		st.config.voice_tweaks.insert(id, t);
+	}
+	apply_levels(&st);
 	save(&st);
 	drop(st);
 	notify();

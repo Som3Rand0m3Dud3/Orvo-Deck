@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "opendeck"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "active-win-pos-rs",
  "anyhow",
@@ -3896,6 +3896,7 @@ dependencies = [
  "psp",
  "reqwest 0.13.1",
  "ringbuf",
+ "rustfft",
  "semver",
  "serde",
  "serde-inline-default",

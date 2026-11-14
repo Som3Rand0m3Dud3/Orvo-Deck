@@ -262,6 +262,79 @@ enum State {
 		ms: f32,
 		g: f32,
 	},
+	Whisper(Vec<Whisp>),
+}
+
+/// Whisper: keeps the shape of each sound (the words) but throws away its pitch,
+/// by giving every frequency a random phase. 512-sample frames, 4x overlap (~11 ms delay).
+pub struct Whisp {
+	inq: Vec<f32>,
+	acc: Vec<f32>,
+	pos: usize,
+	buf: Vec<rustfft::num_complex::Complex<f32>>,
+	fwd: std::sync::Arc<dyn rustfft::Fft<f32>>,
+	inv: std::sync::Arc<dyn rustfft::Fft<f32>>,
+	win: Vec<f32>,
+	rng: u32,
+}
+const WN: usize = 512;
+const WH: usize = WN / 4;
+impl Whisp {
+	fn new() -> Self {
+		let mut p = rustfft::FftPlanner::new();
+		Whisp {
+			inq: vec![0.0; WN],
+			acc: vec![0.0; WN],
+			pos: 0,
+			buf: vec![Default::default(); WN],
+			fwd: p.plan_fft_forward(WN),
+			inv: p.plan_fft_inverse(WN),
+			win: (0..WN).map(|i| (0.5 - 0.5 * (2.0 * PI * i as f32 / WN as f32).cos()).sqrt()).collect(),
+			rng: 0x9E37_79B9,
+		}
+	}
+	fn rand(&mut self) -> f32 {
+		self.rng ^= self.rng << 13;
+		self.rng ^= self.rng >> 17;
+		self.rng ^= self.rng << 5;
+		self.rng as f32 / u32::MAX as f32
+	}
+	fn run(&mut self, x: f32) -> f32 {
+		let out = self.acc[self.pos];
+		self.inq[WN - WH + self.pos] = x;
+		self.pos += 1;
+		if self.pos == WH {
+			self.pos = 0;
+			for i in 0..WN {
+				self.buf[i] = rustfft::num_complex::Complex::new(self.inq[i] * self.win[i], 0.0);
+			}
+			self.fwd.process(&mut self.buf);
+			for k in 0..=WN / 2 {
+				let m = self.buf[k].norm();
+				let v = if k == 0 || k == WN / 2 {
+					rustfft::num_complex::Complex::new(m, 0.0)
+				} else {
+					rustfft::num_complex::Complex::from_polar(m, self.rand() * 2.0 * PI)
+				};
+				self.buf[k] = v;
+				if k != 0 && k != WN / 2 {
+					self.buf[WN - k] = v.conj();
+				}
+			}
+			self.inv.process(&mut self.buf);
+			self.acc.copy_within(WH.., 0);
+			for v in self.acc[WN - WH..].iter_mut() {
+				*v = 0.0;
+			}
+			// random phases add up by power, not amplitude, so this is about 2x the usual 0.5
+			let scale = 1.0 / WN as f32;
+			for i in 0..WN {
+				self.acc[i] += self.buf[i].re * self.win[i] * scale;
+			}
+			self.inq.copy_within(WH.., 0);
+		}
+		out
+	}
 }
 
 pub struct Effect {
@@ -271,7 +344,20 @@ pub struct Effect {
 }
 
 #[allow(dead_code)]
-pub const KINDS: [&str; 11] = ["pitch", "echo", "reverb", "eq", "filter", "distortion", "robot", "chorus", "compressor", "limiter", "leveler"];
+pub const KINDS: [&str; 12] = [
+	"pitch",
+	"echo",
+	"reverb",
+	"eq",
+	"filter",
+	"distortion",
+	"robot",
+	"chorus",
+	"compressor",
+	"limiter",
+	"leveler",
+	"whisper",
+];
 
 impl Effect {
 	pub fn new(spec: EffectSpec, sr: f32, channels: usize) -> Option<Self> {
@@ -313,6 +399,7 @@ impl Effect {
 			"compressor" => State::Compressor { env: 0.0 },
 			"limiter" => State::Limiter { g: 1.0 },
 			"leveler" => State::Leveler { ms: 0.0, g: 1.0 },
+			"whisper" => State::Whisper((0..ch).map(|_| Whisp::new()).collect()),
 			_ => return None,
 		};
 		Some(Effect { spec, sr, state })
@@ -511,6 +598,16 @@ impl Effect {
 					}
 				}
 			}
+			State::Whisper(ws) => {
+				let mix = s.p("mix", 1.0).clamp(0.0, 1.0);
+				let last = ws.len() - 1;
+				for frame in buf.chunks_mut(ch) {
+					for (c, x) in frame.iter_mut().enumerate() {
+						let w = ws[c.min(last)].run(*x);
+						*x = w * mix + *x * (1.0 - mix);
+					}
+				}
+			}
 		}
 	}
 }
@@ -693,7 +790,131 @@ pub const VOICE_PRESETS: &[VoicePreset] = &[
 			]
 		},
 	},
+	VoicePreset {
+		id: "giant",
+		name: "Giant",
+		hint: "Huge body, booming voice.",
+		chain: || {
+			vec![
+				e("pitch", &[("semitones", -4.0), ("formant", -7.0)]),
+				e("eq", &[("bass_db", 5.0), ("treble_db", -3.0)]),
+				e("reverb", &[("size", 0.8), ("damping", 0.6), ("mix", 0.2)]),
+			]
+		},
+	},
+	VoicePreset {
+		id: "kid",
+		name: "Kid",
+		hint: "Young and small.",
+		chain: || vec![e("pitch", &[("semitones", 4.0), ("formant", 3.0)]), e("eq", &[("bass_db", -3.0), ("treble_db", 2.0)])],
+	},
+	VoicePreset {
+		id: "oldman",
+		name: "Old man",
+		hint: "Shaky and rough.",
+		chain: || {
+			vec![
+				e("pitch", &[("semitones", -2.0), ("formant", -1.0)]),
+				e("chorus", &[("rate_hz", 5.5), ("depth", 0.25), ("mix", 0.35)]),
+				e("distortion", &[("drive", 0.12), ("tone", 0.4), ("mix", 0.2)]),
+				e("filter", &[("lowcut_hz", 150.0), ("highcut_hz", 5000.0)]),
+			]
+		},
+	},
+	VoicePreset {
+		id: "whisper",
+		name: "Whisper",
+		hint: "Every word, no voice.",
+		chain: || {
+			vec![
+				e("whisper", &[("mix", 1.0)]),
+				e("filter", &[("lowcut_hz", 250.0), ("highcut_hz", 12000.0)]),
+				e("eq", &[("bass_db", 0.0), ("treble_db", 3.0)]),
+			]
+		},
+	},
+	VoicePreset {
+		id: "helium",
+		name: "Helium",
+		hint: "Balloon gas squeak.",
+		chain: || vec![e("pitch", &[("semitones", 3.0), ("formant", 9.0)])],
+	},
+	VoicePreset {
+		id: "villain",
+		name: "Villain",
+		hint: "Dark and menacing.",
+		chain: || {
+			vec![
+				e("pitch", &[("semitones", -6.0), ("formant", -2.0)]),
+				e("distortion", &[("drive", 0.2), ("tone", 0.35), ("mix", 0.3)]),
+				e("echo", &[("time_ms", 90.0), ("feedback", 0.2), ("mix", 0.15)]),
+				e("reverb", &[("size", 0.85), ("damping", 0.5), ("mix", 0.3)]),
+			]
+		},
+	},
 ];
+
+/// "Tweak a voice": moves the pitch (semitones) and sets how strong the effects are (0..1).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Tweak {
+	#[serde(default)]
+	pub pitch: f32,
+	#[serde(default = "one_f")]
+	pub amount: f32,
+}
+fn one_f() -> f32 {
+	1.0
+}
+impl Default for Tweak {
+	fn default() -> Self {
+		Tweak { pitch: 0.0, amount: 1.0 }
+	}
+}
+
+fn default_mix(kind: &str) -> Option<f32> {
+	Some(match kind {
+		"pitch" | "distortion" | "whisper" => 1.0,
+		"echo" => 0.3,
+		"reverb" => 0.25,
+		"robot" => 0.8,
+		"chorus" => 0.5,
+		_ => return None,
+	})
+}
+
+/// Applies a tweak to a voice's chain.
+pub fn tweak_chain(mut chain: Vec<EffectSpec>, t: Tweak) -> Vec<EffectSpec> {
+	let amount = t.amount.clamp(0.0, 1.0);
+	let pitch = t.pitch.clamp(-12.0, 12.0);
+	if amount < 0.999 {
+		for fx in chain.iter_mut() {
+			if fx.kind == "pitch" {
+				// pitch "strength" scales the shift itself (a dry/wet blend of pitch sounds doubled)
+				for key in ["semitones", "formant"] {
+					if let Some(v) = fx.params.get_mut(key) {
+						*v *= amount;
+					}
+				}
+			} else if fx.kind == "eq" {
+				for v in fx.params.values_mut() {
+					*v *= amount;
+				}
+			} else if let Some(d) = default_mix(&fx.kind) {
+				let m = fx.p("mix", d) * amount;
+				fx.params.insert("mix".into(), m);
+			}
+		}
+	}
+	if pitch.abs() > 0.01 {
+		if let Some(p) = chain.iter_mut().find(|e| e.kind == "pitch") {
+			let v = p.p("semitones", 0.0) + pitch;
+			p.params.insert("semitones".into(), v.clamp(-24.0, 24.0));
+		} else {
+			chain.insert(0, e("pitch", &[("semitones", pitch)]));
+		}
+	}
+	chain
+}
 
 pub fn preset_chain(id: &str) -> Option<Vec<EffectSpec>> {
 	VOICE_PRESETS.iter().find(|p| p.id == id).map(|p| (p.chain)())
@@ -745,5 +966,38 @@ mod tests {
 		let mut silent = vec![0.0f32; 4_800];
 		c.process(&mut silent);
 		assert!(silent.iter().any(|x| x.abs() > 0.01));
+	}
+}
+
+#[cfg(test)]
+mod voice_tests {
+	use super::*;
+
+	#[test]
+	fn whisper_keeps_loudness_and_kills_pitch() {
+		let mut c = Chain::new(48_000.0, 1);
+		c.update(&[EffectSpec::new("whisper", &[])]);
+		let (mut ein, mut eout) = (0.0f32, 0.0f32);
+		for b in 0..100 {
+			let mut f: Vec<f32> = (0..480).map(|i| (2.0 * PI * 200.0 * (b * 480 + i) as f32 / 48_000.0).sin() * 0.3).collect();
+			ein += f.iter().map(|x| x * x).sum::<f32>();
+			c.process(&mut f);
+			if b > 5 {
+				eout += f.iter().map(|x| x * x).sum::<f32>();
+			}
+		}
+		let ratio = eout / ein;
+		assert!(ratio > 0.3 && ratio < 2.0, "whisper loudness ratio {ratio}");
+	}
+
+	#[test]
+	fn tweak_moves_pitch_and_strength() {
+		let deep = preset_chain("deep").unwrap();
+		let t = tweak_chain(deep.clone(), Tweak { pitch: 2.0, amount: 0.5 });
+		let p = t.iter().find(|e| e.kind == "pitch").unwrap();
+		assert_eq!(p.params["semitones"], -5.0 * 0.5 + 2.0);
+		let echo = tweak_chain(preset_chain("echo").unwrap(), Tweak { pitch: 3.0, amount: 1.0 });
+		assert_eq!(echo[0].kind, "pitch");
+		assert_eq!(tweak_chain(deep.clone(), Tweak::default()), deep);
 	}
 }

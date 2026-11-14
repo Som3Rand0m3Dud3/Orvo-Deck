@@ -2,7 +2,7 @@
 	"Name": "Orvo M1",
 	"Description": "Device support for the Orvo M1 macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.7.0",
+	"Version": "0.8.0",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",

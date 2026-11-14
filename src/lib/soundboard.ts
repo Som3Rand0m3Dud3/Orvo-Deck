@@ -67,7 +67,10 @@ export type SoundboardConfig = {
 	sound_fx: EffectSpec[];
 	out_fx: EffectSpec[];
 	my_voices: { id: string; name: string; chain: EffectSpec[] }[];
+	voice_tweaks: { [voice: string]: VoiceTweak };
+	voices_v2: boolean;
 };
+export type VoiceTweak = { pitch: number; amount: number };
 
 // ---------------- Mixer effects
 export type EffectSpec = { id: string; kind: string; on: boolean; params: { [key: string]: number } };
@@ -154,6 +157,11 @@ export const EFFECTS: { [kind: string]: { label: string; desc: string; params: P
 		desc: "Never louder than the ceiling",
 		params: [{ key: "ceiling_db", label: "Ceiling", min: -12, max: 0, step: 0.5, def: -1, unit: "dB" }],
 	},
+	whisper: {
+		label: "Whisper",
+		desc: "Keeps the words, removes the voice's tone",
+		params: [{ key: "mix", label: "Mix", min: 0, max: 1, step: 0.01, def: 1, unit: "%" }],
+	},
 	leveler: {
 		label: "Loudness leveler",
 		desc: "Quiet and loud material come out even",
@@ -239,7 +247,7 @@ export type SoundboardState = {
 };
 
 /** Which page the main window shows: the pad's keys or the soundboard. */
-export const appView: Writable<"pad" | "soundboard" | "mixer"> = writable("pad");
+export const appView: Writable<"pad" | "soundboard" | "mixer" | "voices"> = writable("pad");
 export const soundboard: Writable<SoundboardState | null> = writable(null);
 
 let pending: Promise<void> | null = null;
