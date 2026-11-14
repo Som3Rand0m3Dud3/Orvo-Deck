@@ -4,7 +4,8 @@ import type { ActionInstance } from "./ActionInstance";
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { type Writable, writable } from "svelte/store";
+import { type Writable, get, writable } from "svelte/store";
+import { actionLooks, applyLook, lookKey } from "./actionLooks";
 
 export const SOUND_ACTION = "com.ninedeck.device.sound";
 
@@ -261,20 +262,33 @@ export const SB_SLIDERS = ["com.ninedeck.device.sbmic", "com.ninedeck.device.sbs
 /** A tray cube that carries its key's settings: a sound to play, a voice to switch to… */
 export type SoundAction = Action & { orvoSound?: { id: string; name: string }; orvoPreset?: { settings: any; title: string } };
 
-/** After a sound cube lands on a key: remember the sound and show its name on the key. */
+/** The picture for a voice: Orvo's icon, or a big first letter for your own voices. */
+export function voiceIcon(id: string, name = ""): string {
+	if (!id.startsWith("my:")) return `opendeck/voices/${id}.png`;
+	const letter = (name.trim()[0] ?? "?").toUpperCase().replace(/[<&>"]/g, "");
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" rx="22" fill="#1C1F26"/><text x="72" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="84" font-weight="700" text-anchor="middle" fill="#4F8CFF">${letter}</text></svg>`;
+	return "data:image/svg+xml," + encodeURIComponent(svg);
+}
+
+/** After a cube lands on a key: its settings (sound / voice), then its picture and name. */
 export async function finishSoundKey(instance: ActionInstance | null, action: SoundAction): Promise<ActionInstance | null> {
-	if (!instance || !(action.orvoSound || action.orvoPreset)) return instance;
-	const settings = action.orvoSound ? { sound: action.orvoSound.id } : action.orvoPreset!.settings;
-	const name = action.orvoSound ? action.orvoSound.name : action.orvoPreset!.title;
-	try {
-		const updated = await invoke<ActionInstance>("orvo_set_instance_settings", { context: instance.context, settings });
-		const state = { ...updated.states[0], text: name, show: true };
-		await invoke("set_state", { context: instance.context, index: 0, state });
-		updated.states[0] = state;
-		return updated;
-	} catch {
-		return instance;
+	if (!instance) return instance;
+	const look = get(actionLooks)[lookKey(action)];
+	let updated = instance;
+	if (action.orvoSound || action.orvoPreset) {
+		const settings = action.orvoSound ? { sound: action.orvoSound.id } : action.orvoPreset!.settings;
+		try {
+			updated = await invoke<ActionInstance>("orvo_set_instance_settings", { context: instance.context, settings });
+		} catch {
+			return instance;
+		}
 	}
+	// voices show a picture (no words); sounds show their name
+	const preset = action.orvoPreset?.settings?.preset as string | undefined;
+	const base = preset ? { image: voiceIcon(preset, action.orvoPreset!.title), name: "" } : {};
+	const title = action.orvoSound?.name;
+	if (!look && !preset && title == undefined) return updated;
+	return applyLook(updated, { ...base, ...look }, title);
 }
 
 /** The plain action (without Orvo's extra field) for the backend. */

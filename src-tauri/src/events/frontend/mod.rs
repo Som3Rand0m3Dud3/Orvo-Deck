@@ -124,3 +124,29 @@ pub async fn set_application_profiles(value: crate::application_watcher::Applica
 pub fn get_fonts() -> Vec<String> {
 	system_fonts::query_all()
 }
+
+/// Orvo: small JSON values the app keeps (e.g. your edited action pictures and names).
+fn kv_path(key: &str) -> Option<std::path::PathBuf> {
+	if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+		return None;
+	}
+	Some(crate::shared::config_dir().join("orvo").join(format!("{key}.json")))
+}
+
+#[command]
+pub fn orvo_kv_get(key: String) -> serde_json::Value {
+	kv_path(&key)
+		.and_then(|p| std::fs::read_to_string(p).ok())
+		.and_then(|t| serde_json::from_str(&t).ok())
+		.unwrap_or(serde_json::Value::Null)
+}
+
+#[command]
+pub fn orvo_kv_set(key: String, value: serde_json::Value) -> Result<(), Error> {
+	let path = kv_path(&key).ok_or_else(|| anyhow::anyhow!("bad key"))?;
+	std::fs::create_dir_all(path.parent().unwrap()).map_err(anyhow::Error::from)?;
+	let tmp = path.with_extension("json.temp");
+	std::fs::write(&tmp, serde_json::to_vec(&value).map_err(anyhow::Error::from)?).map_err(anyhow::Error::from)?;
+	std::fs::rename(&tmp, &path).map_err(anyhow::Error::from)?;
+	Ok(())
+}

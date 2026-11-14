@@ -14,6 +14,9 @@
 
 	import { ask, message } from "$lib/dialog";
 	import TrimEditor from "./TrimEditor.svelte";
+	import OnlineSounds from "./OnlineSounds.svelte";
+	import Globe from "phosphor-svelte/lib/Globe";
+	let findingOnline = false;
 	import {
 		MIC_PRESETS,
 		NEUTRAL_SOUND_FX,
@@ -572,6 +575,12 @@
 					<Stop size="16" weight="fill" /> Stop all
 				</button>
 				<button
+					class="flex items-center gap-1.5 px-3 h-9 rounded-lg text-sm text-neutral-200 bg-neutral-800 border border-neutral-600 hover:bg-neutral-700"
+					on:click={() => (findingOnline = true)}
+				>
+					<Globe size="16" /> Find online
+				</button>
+				<button
 					class="flex items-center gap-1.5 px-3 h-9 rounded-lg text-sm font-semibold text-white"
 					style="background: var(--orvo-accent)"
 					on:click={addFromDialog}
@@ -753,4 +762,8 @@
 			>
 		</div>
 	</div>
+{/if}
+
+{#if findingOnline}
+	<OnlineSounds on:close={() => (findingOnline = false)} />
 {/if}

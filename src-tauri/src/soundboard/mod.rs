@@ -7,6 +7,7 @@ pub mod decode;
 pub mod effects;
 pub mod engine;
 pub mod fx;
+pub mod online;
 pub mod render;
 
 use std::collections::HashMap;
@@ -505,7 +506,7 @@ pub fn on_key_down(action_uuid: &str, settings: &serde_json::Value) {
 	}
 }
 
-fn notify() {
+pub(crate) fn notify() {
 	if let Some(app) = crate::APP_HANDLE.get() {
 		let _ = app.emit("soundboard_changed", ());
 	}
@@ -569,7 +570,7 @@ fn nice_name(file_name: &str) -> String {
 }
 
 /// Copies one sound into Orvo's folder, checks it decodes, and adds it.
-fn add_one(file_name: &str, bytes: &[u8]) -> anyhow::Result<Sound> {
+pub(crate) fn add_one(file_name: &str, bytes: &[u8]) -> anyhow::Result<Sound> {
 	let ext = Path::new(file_name).extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
 	if !EXTENSIONS.contains(&ext.as_str()) {
 		anyhow::bail!("not a sound file");

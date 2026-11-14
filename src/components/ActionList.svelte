@@ -13,7 +13,9 @@
 	import { PRODUCT_NAME } from "$lib/singletons";
 
 	import { trayScale } from "$lib/tray";
-	import { MIXER_ACTIONS, SB_SLIDERS, SOUND_ACTION, appView, soundboard, type SoundAction } from "$lib/soundboard";
+	import { MIXER_ACTIONS, SB_SLIDERS, SOUND_ACTION, appView, soundboard, voiceIcon, type SoundAction } from "$lib/soundboard";
+	import { actionLooks, lookKey } from "$lib/actionLooks";
+	import ActionLookEditor from "./ActionLookEditor.svelte";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { tick } from "svelte";
@@ -64,7 +66,8 @@
 					...($soundboard?.config.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name })),
 				].map((p): SoundAction => ({
 					...voiceAction!,
-					name: `Voice: ${p.name}`,
+					name: p.name,
+					icon: voiceIcon(p.id, p.name),
 					tooltip: `Press to switch "${p.name}" on or off (hold mode in the key's settings)`,
 					orvoPreset: { settings: { preset: p.id, mode: "toggle", name: p.name }, title: p.name },
 				}))
@@ -164,7 +167,12 @@
 		if (plugin && category.actions.every((x) => x.plugin == first.plugin)) return getWebserverUrl(plugin.icon);
 		return null;
 	}
-	const actionIcon = (action: Action) => (!action.icon.startsWith("opendeck/") ? getWebserverUrl(action.icon) : action.icon.replace("opendeck", ""));
+	const actionIcon = (action: Action) =>
+		action.icon.startsWith("data:") ? action.icon : !action.icon.startsWith("opendeck/") ? getWebserverUrl(action.icon) : action.icon.replace("opendeck", "");
+	// your own picture / name for a cube (right-click → Edit action)
+	const cubeIcon = (action: SoundAction, looks: typeof $actionLooks) => looks[lookKey(action)]?.image ?? actionIcon(action);
+	const cubeName = (action: SoundAction, looks: typeof $actionLooks) => looks[lookKey(action)]?.name || nameOf(action);
+	let editingLook: SoundAction | null = null;
 
 	// Minimized: only the arrow shows. The arrow, or clicking an empty box, pulls the tray back up.
 	let minimized = read("orvo-tray-min") == "1";
@@ -371,13 +379,14 @@
 										event.dataTransfer.setData("action", JSON.stringify(action));
 									}}
 									on:click={() => pick(action)}
+									on:contextmenu|preventDefault={() => (editingLook = action)}
 									on:keydown={(event) => {
 										if ((event.ctrlKey || event.metaKey) && event.key == "c") copiedItem.set({ type: "action", action });
 										else if (event.key == "Enter") pick(action);
 									}}
 								>
-									<img src={actionIcon(action)} alt="" class="w-9 h-9 rounded-lg border border-neutral-700 pointer-events-none" />
-									<span class="tray-name text-xs leading-tight text-center text-neutral-200 pointer-events-none">{nameOf(action)}</span>
+									<img src={cubeIcon(action, $actionLooks)} alt="" class="w-9 h-9 rounded-lg border border-neutral-700 pointer-events-none" />
+									<span class="tray-name text-xs leading-tight text-center text-neutral-200 pointer-events-none">{cubeName(action, $actionLooks)}</span>
 								</div>
 							{:else}
 								{#if selected == SOUNDBOARD && !query.trim()}
@@ -400,6 +409,10 @@
 		</div>
 	{/if}
 </div>
+
+{#if editingLook}
+	<ActionLookEditor action={editingLook} defaultIcon={actionIcon(editingLook)} defaultName={nameOf(editingLook)} on:close={() => (editingLook = null)} />
+{/if}
 
 <style>
 	/* Search is a round button until it is used, so the tabs keep the room. */

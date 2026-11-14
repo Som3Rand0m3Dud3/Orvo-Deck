@@ -196,6 +196,10 @@ async fn main() {
 			soundboard::sb_set_voice,
 			soundboard::sb_save_voice,
 			soundboard::sb_delete_voice,
+			soundboard::online::sb_online_search,
+			soundboard::online::sb_online_add,
+			frontend::orvo_kv_get,
+			frontend::orvo_kv_set,
 			soundboard::sb_meter,
 		])
 		.setup(|app| {

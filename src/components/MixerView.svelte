@@ -22,6 +22,7 @@
 		refreshSoundboard,
 		soundboard,
 		updateConfig,
+		voiceIcon,
 		type EffectSpec,
 		type SoundboardConfig,
 	} from "$lib/soundboard";
@@ -138,6 +139,7 @@
 		...(state?.voice_presets ?? []).map((p) => ({ id: p.id, name: p.name, hint: p.hint, mine: false })),
 		...(config?.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name, hint: "Your saved voice", mine: true })),
 	];
+	const iconUrl = (id: string, name: string) => voiceIcon(id, name).replace(/^opendeck\//, "/");
 	$: currentHint = presets.find((p) => p.id == config?.voice_preset)?.hint ?? "Your own mix. Save it as a preset to keep it.";
 	async function pickVoice(id: string) {
 		await invoke("sb_set_voice", { id });
@@ -318,11 +320,11 @@
 									role="radio"
 									aria-checked={on}
 									title={p.hint}
-									class="h-9 px-3.5 rounded-full border text-sm transition-colors {on
+									class="flex items-center gap-2 h-10 pl-1.5 pr-3.5 rounded-full border text-sm transition-colors {on
 										? 'bg-[#1D2A44] text-neutral-100'
 										: 'bg-neutral-800 border-neutral-600 text-neutral-300 hover:text-neutral-100'} {p.mine ? 'pr-8' : ''}"
 									style={on ? "border-color: var(--orvo-accent)" : ""}
-									on:click={() => pickVoice(p.id)}>{p.name}</button
+									on:click={() => pickVoice(p.id)}><img src={iconUrl(p.id, p.name)} alt="" class="w-6 h-6 rounded-md" />{p.name}</button
 								>
 								{#if p.mine}
 									<button
