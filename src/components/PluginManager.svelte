@@ -125,10 +125,6 @@
 		await installPlugin(plugin.name, selected.browser_download_url, null, id);
 	}
 
-	async function installPluginElgato(plugin: any) {
-		await installPlugin(plugin.name, `https://plugins.amankhanna.me/rezipped/${plugin.id}.zip`, null, plugin.id);
-	}
-
 	async function installPluginFile() {
 		const path = await open({ multiple: false, directory: false });
 		if (!path) return;
@@ -190,8 +186,14 @@
 	let plugins: { [id: string]: GitHubPlugin };
 	(async () => (plugins = await (await fetch("https://openactionapi.github.io/plugins/catalogue.json")).json()))();
 
-	let showArchive: boolean = false;
-	let archivePlugins: any[] | null = null;
+	// Orvo: the store has tabs. "All" shows (and searches) every kind; Elgato is coming later.
+	type StoreTab = "all" | "open" | "elgato";
+	let storeTab: StoreTab = "all";
+	const STORE_TABS: [StoreTab, string][] = [
+		["all", "All"],
+		["open", "Open-source"],
+		["elgato", "Elgato"],
+	];
 
 	let availableUpdates: { [id: string]: string | false } = {};
 	let checkedPlugins = new Set<string>();
@@ -312,11 +314,15 @@
 		</button>
 	</div>
 
-	<div class="flex flex-row items-center mx-2 my-4 p-3 space-x-2 bg-yellow-900/20 border-l-4 border-yellow-500 rounded">
-		<WarningCircle size="20" class="mt-0.5 text-yellow-500" />
-		<div class="text-sm text-yellow-200">
-			{$t("plugin_manager.warning", { PRODUCT_NAME })}
-		</div>
+	<div role="tablist" aria-label="Plugin types" class="flex gap-1 mx-2 mt-2 p-1 rounded-xl bg-neutral-700 w-fit">
+		{#each STORE_TABS as [id, label]}
+			<button
+				role="tab"
+				aria-selected={storeTab == id}
+				class="px-4 h-9 rounded-lg text-sm transition-colors {storeTab == id ? 'bg-neutral-900 text-neutral-100' : 'text-neutral-300 hover:text-neutral-100'}"
+				on:click={() => (storeTab = id)}>{label}</button
+			>
+		{/each}
 	</div>
 
 	<div class="flex flex-row items-center m-2 bg-neutral-700 border border-neutral-600 rounded-lg">
@@ -331,99 +337,49 @@
 		/>
 	</div>
 
-	{#if !plugins}
-		<h2 class="mx-2 mt-6 mb-2 text-md text-neutral-400">{$t("plugin_manager.loading.open_source")}</h2>
-	{:else}
-		<div class="flex flex-row items-center ml-2 mt-6 mb-2 space-x-2">
-			<h2 class="font-semibold text-md text-neutral-400">{$t("plugin_manager.open_source")}</h2>
-			<Tooltip>{$t("plugin_manager.open_source.tooltip")}</Tooltip>
+	<div class="flex flex-row items-center mx-2 my-4 p-3 space-x-2 bg-yellow-900/20 border-l-4 border-yellow-500 rounded">
+		<WarningCircle size="20" class="mt-0.5 text-yellow-500" />
+		<div class="text-sm text-yellow-200">
+			{$t("plugin_manager.warning", { PRODUCT_NAME })}
 		</div>
-		<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-			{#each Object.entries(plugins) as [id, plugin]}
-				<ListedPlugin
-					icon="https://openactionapi.github.io/plugins/icons/{id}.png"
-					name={plugin.name}
-					subtitle={plugin.author}
-					hidden={!plugin.name.toLowerCase().includes(query.toLowerCase())}
-					action={() => (openDetailsView = id)}
-					actionLabel={$t("plugin_manager.view_details")}
-				>
-					<svelte:fragment slot="subtitle">
-						<span>
-							{plugin.author}
-							{#if plugin.flags?.ai_assisted}
-								<Robot size="1em" class="inline align-text-bottom text-yellow-500" />
-							{/if}
-						</span>
-					</svelte:fragment>
-
-					<ArrowSquareOut size="24" class="text-neutral-400" />
-				</ListedPlugin>
-			{/each}
-		</div>
-	{/if}
-
-	<div class="flex flex-row items-center mt-6 mb-2">
-		<h2 class="mx-2 font-semibold text-md text-neutral-400">{$t("plugin_manager.elgato")}</h2>
-		<Tooltip>{$t("plugin_manager.elgato.tooltip")}</Tooltip>
 	</div>
-	{#if !showArchive}
-		<button
-			class="ml-2 mt-2 mb-2 px-2 py-1 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
-			on:click={async () => {
-				showArchive = true;
-				archivePlugins = await (await fetch("https://plugins.amankhanna.me/catalogue.json")).json();
-			}}
-		>
-			{$t("plugin_manager.elgato.load")}
-		</button>
-	{:else if !archivePlugins}
-		<h2 class="mx-2 mt-4 mb-2 text-md text-neutral-400">{$t("plugin_manager.loading.elgato")}</h2>
+
+	{#if storeTab != "elgato"}
+		{#if !plugins}
+			<h2 class="mx-2 mt-6 mb-2 text-md text-neutral-400">{$t("plugin_manager.loading.open_source")}</h2>
+		{:else}
+			<div class="flex flex-row items-center ml-2 mt-6 mb-2 space-x-2">
+				<h2 class="font-semibold text-md text-neutral-400">{$t("plugin_manager.open_source")}</h2>
+				<Tooltip>{$t("plugin_manager.open_source.tooltip")}</Tooltip>
+			</div>
+			<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+				{#each Object.entries(plugins) as [id, plugin]}
+					<ListedPlugin
+						icon="https://openactionapi.github.io/plugins/icons/{id}.png"
+						name={plugin.name}
+						subtitle={plugin.author}
+						hidden={!plugin.name.toLowerCase().includes(query.toLowerCase())}
+						action={() => (openDetailsView = id)}
+						actionLabel={$t("plugin_manager.view_details")}
+					>
+						<svelte:fragment slot="subtitle">
+							<span>
+								{plugin.author}
+								{#if plugin.flags?.ai_assisted}
+									<Robot size="1em" class="inline align-text-bottom text-yellow-500" />
+								{/if}
+							</span>
+						</svelte:fragment>
+
+						<ArrowSquareOut size="24" class="text-neutral-400" />
+					</ListedPlugin>
+				{/each}
+			</div>
+		{/if}
 	{:else}
-		<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-			{#each archivePlugins as plugin}
-				<ListedPlugin
-					icon="https://plugins.amankhanna.me/icons/{plugin.id}.png"
-					name={plugin.name}
-					subtitle={plugin.author}
-					hidden={!plugin.name.toLowerCase().includes(query.toLowerCase())}
-					action={() => installPluginElgato(plugin)}
-					actionLabel={$t("plugin_details.install")}
-				>
-					<CloudArrowDown size="24" class="text-neutral-400" />
-				</ListedPlugin>
-			{/each}
-		</div>
-	{/if}
-
-	{#if "Tacto Connect".toLowerCase().includes(query.toLowerCase())}
-		<div class="flex flex-row items-center mt-6 mb-2">
-			<h2 class="mx-2 font-semibold text-md text-neutral-400">Tacto</h2>
-			<Tooltip>{$t("plugin_manager.tacto.tooltip")}</Tooltip>
-		</div>
-		<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-			<ListedPlugin
-				icon="https://tacto.live/icon-192.png"
-				name="Tacto Connect"
-				subtitle="Rivulus"
-				action={() => {
-					installPluginGitHub("us.rivul.tacto", {
-						name: "Tacto Connect",
-						author: "Rivulus",
-						repository: "https://github.com/RivulusLive/tacto-desktop",
-						download_url: undefined,
-					});
-				}}
-				actionLabel={$t("plugin_details.install")}
-				secondaryAction={() => window.open("https://tacto.live")}
-				secondaryActionLabel={$t("plugin_manager.visit_website")}
-			>
-				<svelte:fragment slot="secondary">
-					<ArrowSquareOut size="24" class="text-neutral-400" />
-				</svelte:fragment>
-
-				<CloudArrowDown size="24" class="mt-2 text-neutral-400" />
-			</ListedPlugin>
+		<div class="mx-2 mt-6 p-6 rounded-xl border border-dashed border-neutral-600 text-center">
+			<p class="font-semibold text-neutral-300">Elgato plugins are coming soon</p>
+			<p class="mt-1 text-sm text-neutral-400">For now, download a plugin from the Elgato Marketplace and use "{$t("plugin_manager.install_from_file")}" above.</p>
 		</div>
 	{/if}
 </Popup>
