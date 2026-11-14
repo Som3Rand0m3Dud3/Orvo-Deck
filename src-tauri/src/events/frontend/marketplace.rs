@@ -1,19 +1,21 @@
 //! Orvo: the Elgato Marketplace inside Orvo Studio.
 //!
 //! The Marketplace opens in its own window with its own browser profile (so signing out never
-//! touches Orvo's settings). A small script on Elgato's pages (`marketplace_bridge.js`) reports the
-//! signed-in account and, when "Open in Stream Deck" is pressed, asks Elgato for the plugin's
-//! download link. It talks to Orvo by navigating to `https://orvo-bridge.invalid/...`, which is
-//! caught here and cancelled, so Elgato's pages never get access to Orvo itself.
+//! touches Orvo's settings). Who is signed in is checked here, from that window's own cookies, after
+//! each page finishes loading; nothing runs on Elgato's pages while you browse. Only when
+//! "Open in Stream Deck" is pressed does a small script (`marketplace_bridge.js`) ask Elgato for the
+//! plugin's download link. It talks to Orvo by navigating to `https://orvo-bridge.invalid/...`,
+//! which is caught here and cancelled, so Elgato's pages never get access to Orvo itself.
 //! If that direct route fails, the Marketplace's own "Open in Stream Deck" link and any plugin
 //! file it downloads are caught here too and installed instead.
 
 use super::Error;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::webview::{DownloadEvent, NewWindowResponse};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 const LABEL: &str = "elgato-marketplace";
@@ -22,6 +24,7 @@ const BRIDGE_HOST: &str = "orvo-bridge.invalid";
 const BRIDGE_JS: &str = include_str!("marketplace_bridge.js");
 
 static POPUPS: AtomicUsize = AtomicUsize::new(0);
+static LAST_ACCOUNT: Mutex<String> = Mutex::new(String::new());
 
 #[derive(Clone, Serialize)]
 struct InstallRequest {
@@ -77,16 +80,6 @@ fn handle_navigation(app: &AppHandle, url: &Url) -> bool {
 					);
 				}
 			}
-			"/account" => {
-				let _ = app.emit(
-					"elgato_account",
-					Account {
-						signed_in: query(url, "signed") == "1",
-						name: query(url, "name"),
-						email: query(url, "email"),
-					},
-				);
-			}
 			_ => log::warn!("Elgato Marketplace: {}", query(url, "msg")),
 		}
 		return false;
@@ -113,6 +106,51 @@ fn handle_navigation(app: &AppHandle, url: &Url) -> bool {
 	true
 }
 
+fn emit_account(app: &AppHandle, account: Account) {
+	let key = format!("{}|{}|{}", account.signed_in, account.name, account.email);
+	{
+		let mut last = LAST_ACCOUNT.lock().unwrap();
+		if *last == key {
+			return;
+		}
+		*last = key;
+	}
+	let _ = app.emit("elgato_account", account);
+}
+
+/// Asks Elgato who is signed in, using the Marketplace window's own cookies.
+async fn check_account(app: AppHandle, window: tauri::WebviewWindow) {
+	let site: Url = "https://marketplace.elgato.com/".parse().unwrap();
+	let cookies = match tauri::async_runtime::spawn_blocking(move || window.cookies_for_url(site)).await {
+		Ok(Ok(cookies)) => cookies,
+		_ => return,
+	};
+	let header = cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; ");
+	let session: serde_json::Value = match reqwest::Client::new()
+		.get("https://marketplace.elgato.com/api/auth/session")
+		.header("Cookie", header)
+		.header("Accept", "application/json")
+		.send()
+		.await
+	{
+		Ok(response) => response.json().await.unwrap_or(serde_json::Value::Null),
+		Err(error) => {
+			log::warn!("Elgato Marketplace: account check failed: {error}");
+			return;
+		}
+	};
+	let user = &session["user"];
+	let text = |key: &str| user[key].as_str().unwrap_or_default().to_owned();
+	emit_account(
+		&app,
+		Account {
+			signed_in: user.is_object(),
+			name: if text("name").is_empty() { text("nickname") } else { text("name") },
+			email: text("email"),
+		},
+	);
+}
+
 fn is_plugin_file(path: &std::path::Path) -> bool {
 	let lower = path.to_string_lossy().to_lowercase();
 	lower.ends_with(".streamdeckplugin") || lower.ends_with(".zip")
@@ -122,13 +160,20 @@ fn build_window(app: &AppHandle, url: Url, visible: bool) -> Result<tauri::Webvi
 	let nav_app = app.clone();
 	let popup_app = app.clone();
 	let download_app = app.clone();
+	let load_app = app.clone();
 	let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
 		.title("Elgato Marketplace · Orvo Studio")
 		.inner_size(1200.0, 820.0)
 		.min_inner_size(720.0, 520.0)
 		.visible(visible)
 		.data_directory(data_dir())
+		.devtools(true) // right-click → Inspect, to see what a page is doing
 		.initialization_script(BRIDGE_JS)
+		.on_page_load(move |window, payload| {
+			if payload.event() == PageLoadEvent::Finished && payload.url().host_str() == Some("marketplace.elgato.com") {
+				tauri::async_runtime::spawn(check_account(load_app.clone(), window));
+			}
+		})
 		.on_navigation(move |url| handle_navigation(&nav_app, url))
 		// Sign-in pop-ups (Google, Discord, Twitch…) open as small windows that share the session.
 		.on_new_window(move |url, features| {
@@ -197,8 +242,8 @@ pub async fn orvo_marketplace_sign_out(app: AppHandle) -> Result<(), Error> {
 	};
 	window.clear_all_browsing_data().map_err(|e| anyhow::anyhow!(e.to_string()))?;
 	let _ = window.close();
-	let _ = app.emit(
-		"elgato_account",
+	emit_account(
+		&app,
 		Account {
 			signed_in: false,
 			name: String::new(),

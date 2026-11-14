@@ -1,5 +1,6 @@
 // Orvo Studio: runs on Elgato Marketplace pages inside Orvo's Marketplace window.
-// It only talks to Orvo by navigating to https://orvo-bridge.invalid/…, which Orvo catches and cancels.
+// It does nothing while you browse. Only when "Open in Stream Deck" is pressed does it talk to Orvo,
+// by navigating to https://orvo-bridge.invalid/…, which Orvo catches and cancels.
 (() => {
 	if (window.__orvoBridge || location.hostname !== "marketplace.elgato.com") return;
 	window.__orvoBridge = true;
@@ -18,20 +19,6 @@
 			return null;
 		}
 	};
-
-	// Tell Orvo who is signed in (only when it changes).
-	const reportAccount = async () => {
-		const s = await session();
-		const user = s && s.user ? s.user : null;
-		const key = user ? `1|${user.name || ""}|${user.email || ""}` : "0";
-		try {
-			if (sessionStorage.getItem("orvo-account") === key) return;
-			sessionStorage.setItem("orvo-account", key);
-		} catch {}
-		send("/account", { signed: user ? 1 : 0, name: user && (user.name || user.nickname), email: user && user.email });
-	};
-	if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => setTimeout(reportAccount, 300));
-	else setTimeout(reportAccount, 300);
 
 	// The page's data. The site changes pages without reloading, so read it fresh from the current page.
 	const pageData = async () => {
