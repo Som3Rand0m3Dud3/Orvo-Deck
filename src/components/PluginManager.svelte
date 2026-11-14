@@ -24,7 +24,8 @@
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
 	import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
-	import { ask, message } from "$lib/dialog";
+	import { ask, message, openDialog } from "$lib/dialog";
+	import { onDestroy, tick } from "svelte";
 	import { open } from "@tauri-apps/plugin-dialog";
 
 	// @ts-expect-error
@@ -212,7 +213,7 @@
 	});
 	(async () => {
 		const pending: { name: string; url: string | null; file: string | null }[] = await invoke("orvo_take_pending_installs");
-		for (const p of pending) {
+		for (const p of pending ?? []) {
 			showPopup = true;
 			await installPlugin(p.name, p.url, p.file, null, false);
 		}
@@ -224,14 +225,51 @@
 			buttons: { ok: $t("dialog.ok") },
 		});
 	});
-	async function openMarketplace() {
+	function openMarketplace() {
 		accountMenu = false;
-		try {
-			await invoke("orvo_open_marketplace", { page: null });
-		} catch (error: any) {
-			message(String(error), { title: "Elgato Marketplace", buttons: { ok: $t("dialog.ok") } });
-		}
+		showPopup = true;
+		storeTab = "elgato";
 	}
+
+	// The Marketplace is a separate web view laid over the Elgato tab's area. It is hidden whenever
+	// something of Orvo's must show on top (messages, menus, details), since it would cover them.
+	let mpEl: HTMLDivElement | null = null;
+	let mpHeight = 520;
+	let mpShown = false;
+	let mpRect = "";
+	let mpFrame = 0;
+	$: wantMarketplace = showPopup && storeTab == "elgato" && !$openDialog && !accountMenu && !openDetailsView && !choices;
+	function placeMarketplace() {
+		cancelAnimationFrame(mpFrame);
+		mpFrame = requestAnimationFrame(async () => {
+			if (!wantMarketplace || !mpEl) {
+				if (mpShown) {
+					mpShown = false;
+					mpRect = "";
+					invoke("orvo_marketplace_hide").catch(() => {});
+				}
+				return;
+			}
+			const height = Math.max(240, Math.floor(window.innerHeight - mpEl.getBoundingClientRect().top - 28));
+			if (Math.abs(height - mpHeight) > 1) {
+				mpHeight = height;
+				await tick();
+			}
+			const r = mpEl.getBoundingClientRect();
+			const key = [r.left, r.top, r.width, r.height].map(Math.round).join(",");
+			if (mpShown && key == mpRect) return;
+			mpShown = true;
+			mpRect = key;
+			invoke("orvo_marketplace_show", { x: r.left, y: r.top, width: r.width, height: r.height }).catch((error) => console.error(error));
+		});
+	}
+	$: wantMarketplace, mpEl, placeMarketplace();
+	function watchSize(node: HTMLElement) {
+		const observer = new ResizeObserver(() => placeMarketplace());
+		observer.observe(node);
+		return { destroy: () => observer.disconnect() };
+	}
+	onDestroy(() => invoke("orvo_marketplace_hide").catch(() => {}));
 	const MARKETPLACE = "https://marketplace.elgato.com/stream-deck/plugins";
 	async function openInBrowser() {
 		accountMenu = false;
@@ -294,6 +332,7 @@
 </button>
 
 <svelte:window
+	on:resize={placeMarketplace}
 	on:keydown={(event) => {
 		if (event.key == "Escape") {
 			if (choices) cancelChoice();
@@ -323,7 +362,7 @@
 						<div role="menu" class="absolute right-0 top-11 z-40 w-56 p-1 rounded-lg bg-neutral-700 border border-neutral-600 shadow-lg">
 							{#if elgato.email && elgato.name}<p class="px-3 py-2 text-xs text-neutral-400 truncate">{elgato.email}</p>{/if}
 							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openMarketplace}>
-								<Storefront size="16" />Open Elgato Marketplace
+								<Storefront size="16" />Go to the Marketplace
 							</button>
 							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openInBrowser}>
 								<ArrowSquareOut size="16" />Open in my browser
@@ -336,9 +375,10 @@
 				{:else}
 					<button
 						class="flex items-center gap-2 h-9 px-3 rounded-full bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600 transition-colors"
+						title="Sign in inside the Elgato tab"
 						on:click={openMarketplace}
 					>
-						<UserCircle size="18" />Sign in with Elgato
+						<UserCircle size="18" />Not signed in
 					</button>
 				{/if}
 			</div>
@@ -346,6 +386,7 @@
 		</div>
 	</svelte:fragment>
 
+	{#if storeTab != "elgato"}
 	<h2 class="mx-2 mt-4 mb-2 text-lg text-neutral-400">{$t("plugin_manager.installed")}</h2>
 	<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
 		<!-- prettier-ignore -->
@@ -400,8 +441,18 @@
 		{/each}
 	</div>
 
-	<div class="flex flex-row justify-between items-center mx-2 mt-6 mb-2">
-		<h2 class="text-lg text-neutral-400">{$t("plugin_manager.store")}</h2>
+	{/if}
+
+	<div class="flex flex-row items-center gap-2 mx-2 mt-6 mb-2" class:mt-2={storeTab == "elgato"}>
+		<h2 class="grow text-lg text-neutral-400">{$t("plugin_manager.store")}</h2>
+		<button
+			class="flex flex-row items-center mt-2 px-1 py-0.5 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
+			title="Google sign-in works there. Press Open in Stream Deck, or download the plugin and open the file, and Orvo installs it."
+			on:click={openInBrowser}
+		>
+			<ArrowSquareOut />
+			<span class="ml-1">Open in my browser</span>
+		</button>
 		<button
 			class="flex flex-row items-center mt-2 px-1 py-0.5 text-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 transition-colors border border-neutral-600 rounded-lg"
 			on:click={installPluginFile}
@@ -422,6 +473,7 @@
 		{/each}
 	</div>
 
+	{#if storeTab != "elgato"}
 	<div class="flex flex-row items-center m-2 bg-neutral-700 border border-neutral-600 rounded-lg">
 		<MagnifyingGlass size="14" class="ml-3 mr-0.5 text-neutral-300" />
 		<input
@@ -440,6 +492,8 @@
 			{$t("plugin_manager.warning", { PRODUCT_NAME })}
 		</div>
 	</div>
+
+	{/if}
 
 	{#if storeTab != "elgato"}
 		{#if !plugins}
@@ -474,25 +528,17 @@
 			</div>
 		{/if}
 	{:else}
-		<div class="mx-2 mt-6 p-6 rounded-xl border border-neutral-600 text-center">
-			<Storefront size="36" class="mx-auto text-neutral-300" />
-			<p class="mt-2 font-semibold text-neutral-200">Elgato Marketplace</p>
-			<p class="mt-1 text-sm text-neutral-400">
-				{elgato.signed_in ? `Signed in as ${elgatoLabel}.` : "Sign in with your Elgato account (free) to get Marketplace plugins."}
-				Press <strong>Get</strong>, then <strong>Open in Stream Deck</strong>, and Orvo installs the plugin.
+		<div class="flex flex-row items-center gap-2 mx-2 mt-3 mb-2">
+			<button class="flex items-center justify-center w-9 h-9 rounded-lg bg-neutral-700 border border-neutral-600 text-neutral-200 hover:bg-neutral-600" aria-label="Back" title="Back" on:click={() => invoke("orvo_marketplace_back")}>←</button>
+			<button class="flex items-center gap-1.5 h-9 px-3 rounded-lg bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600" on:click={() => invoke("orvo_marketplace_home")}>
+				<Storefront size="16" />Plugins
+			</button>
+			<p class="ml-2 text-xs text-neutral-400">
+				Sign in inside the Marketplace (email, Discord or Twitch). Press <strong>Open in Stream Deck</strong> or <strong>Download</strong>, and Orvo installs it. Google sign-in: "Open in my browser".
 			</p>
-			<div class="flex flex-row flex-wrap justify-center gap-2 mt-4">
-				<button class="px-4 h-10 rounded-lg text-sm font-semibold text-white" style="background: var(--orvo-accent)" on:click={openMarketplace}>
-					{elgato.signed_in ? "Browse the Elgato Marketplace" : "Sign in and browse"}
-				</button>
-				<button class="px-4 h-10 rounded-lg text-sm text-neutral-200 bg-neutral-700 border border-neutral-600 hover:bg-neutral-600 transition-colors" on:click={openInBrowser}>
-					Open in my browser
-				</button>
-			</div>
-			<p class="mt-3 text-xs text-neutral-500">
-				Google sign-in only works in your browser. There, press Open in Stream Deck, or download the plugin file and open it, and Orvo installs it.
-				If a plugin won't install by itself, use "{$t("plugin_manager.install_from_file")}".
-			</p>
+		</div>
+		<div bind:this={mpEl} use:watchSize class="mx-2 rounded-xl border border-neutral-600 bg-neutral-900 flex items-center justify-center text-sm text-neutral-500" style={`height: ${mpHeight}px`}>
+			Loading the Elgato Marketplace…
 		</div>
 	{/if}
 </Popup>
