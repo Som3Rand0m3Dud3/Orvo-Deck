@@ -13,6 +13,7 @@
 	import NoDevicesDetected from "../components/NoDevicesDetected.svelte";
 	import PadFirmware from "../components/PadFirmware.svelte";
 	import AppUpdateCard from "../components/AppUpdateCard.svelte";
+	import OrvoDialog from "../components/OrvoDialog.svelte";
 	import PadPreloader from "../components/PadPreloader.svelte";
 	import PagesNav from "../components/PagesNav.svelte";
 	import ParentActionView from "../components/ParentActionView.svelte";
@@ -38,11 +39,7 @@
 <div class="relative flex flex-col h-screen text-neutral-300" style="background: var(--orvo-stage)">
 	<header class="flex items-center gap-4 h-14 px-5 shrink-0 bg-neutral-900 border-b border-neutral-700">
 		<div class="flex items-center gap-2.5">
-			<svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-				<rect width="28" height="28" rx="8" class="fill-neutral-800" />
-				<circle cx="14" cy="14" r="7" fill="none" stroke="var(--orvo-accent)" stroke-width="3" />
-				<circle cx="20" cy="8" r="3" fill="var(--orvo-orange)" />
-			</svg>
+			<img src="/orvo-logo.svg" width="28" height="28" alt="" aria-hidden="true" />
 			<span class="font-bold text-base text-neutral-100 tracking-tight">Orvo Studio</span>
 		</div>
 
@@ -110,3 +107,5 @@
 		</aside>
 	</div>
 </div>
+
+<OrvoDialog />

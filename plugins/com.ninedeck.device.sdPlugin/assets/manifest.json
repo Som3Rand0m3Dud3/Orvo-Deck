@@ -2,7 +2,7 @@
 	"Name": "NineDeck",
 	"Description": "Device support for the NineDeck macro pad",
 	"Author": "Khaled Alajmi",
-	"Version": "0.3.9",
+	"Version": "0.3.10",
 	"Icon": "assets/icon",
 	"Category": "Hardware",
 	"CodePathWin": "ninedeck-win.exe",

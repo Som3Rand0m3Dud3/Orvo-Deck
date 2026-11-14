@@ -40,7 +40,7 @@
 #include <tusb.h>
 #include <EEPROM.h>
 
-#define FW_VERSION "0.9.3"
+#define FW_VERSION "0.9.4"
 
 #define PIN_DC   16
 #define PIN_CS   17

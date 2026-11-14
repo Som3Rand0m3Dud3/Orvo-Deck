@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#12151B"/><g transform="translate(50 50) scale(0.86) translate(-50 -48)"><defs><g id="p"><circle r="9" fill="#E6E8EE"/><circle r="7" fill="#12151B"/><circle r="4.7" fill="#FF8A3D"/><circle r="2" fill="#12151B"/></g><clipPath id="c"><circle cx="40.86" cy="19.26" r="10.00"/></clipPath><clipPath id="c2"><circle cx="40.86" cy="19.26" r="12.00"/></clipPath></defs>
+<circle cx="50" cy="52" r="34" fill="none" stroke="#E6E8EE" stroke-width="11"/>
+<polyline points="38,9 50,52 62,9" fill="none" stroke="#12151B" stroke-width="13.2" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="38,9 50,52 62,9" fill="none" stroke="#4F8CFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="50" cy="52" r="34" fill="none" stroke="#12151B" stroke-width="16.2" clip-path="url(#c)"/>
+<circle cx="50" cy="52" r="34" fill="none" stroke="#E6E8EE" stroke-width="11" clip-path="url(#c2)"/>
+<use href="#p" x="25.96" y="76.04"/><use href="#p" x="74.04" y="76.04"/><use href="#p" x="74.04" y="27.96"/><use href="#p" x="25.96" y="27.96"/></g></svg>

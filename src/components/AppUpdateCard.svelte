@@ -2,7 +2,7 @@
 	// Orvo Studio card above the pad firmware card: checks for a new version every 5 minutes.
 	import { appUpdate } from "$lib/orvoUpdate";
 	import { invoke } from "@tauri-apps/api/core";
-	import { ask, message } from "@tauri-apps/plugin-dialog";
+	import { ask, message } from "$lib/dialog";
 	import { onDestroy, onMount } from "svelte";
 
 	type Release = { tag: string; newer: boolean; current: boolean };

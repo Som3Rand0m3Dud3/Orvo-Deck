@@ -170,6 +170,7 @@ async fn main() {
 			frontend::pad::orvo_page_images,
 			frontend::pad::orvo_pad_settings,
 			frontend::pad::orvo_slider_locked,
+			frontend::pad::orvo_take_startup_notice,
 			frontend::pad::orvo_slider_changed,
 			frontend::pad::orvo_slider_refresh,
 			frontend::pad::orvo_slider_lock,
@@ -205,7 +206,6 @@ async fn main() {
 			}
 
 			let mut settings = store::get_settings();
-			use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 			let current_version = semver::Version::parse(built_info::PKG_VERSION)?;
 			let settings_version = semver::Version::parse(&settings.value.version)?;
 			// Any version change (upgrade or rollback) is allowed, so the version picker can go back and forth.
@@ -226,7 +226,8 @@ async fn main() {
 						format!("{PRODUCT_NAME} is now on v{} (was v{}).", built_info::PKG_VERSION, settings_version),
 					)
 				};
-				app.dialog().message(message).title(title).kind(MessageDialogKind::Info).show(|_| ());
+				// shown by the app itself (Orvo-styled pop-up), not as a Windows message box
+				*frontend::pad::STARTUP_NOTICE.lock().unwrap() = Some((title, message));
 			}
 
 			use tauri_plugin_aptabase::{Builder, EventTracker, InitOptions};
@@ -307,36 +308,7 @@ async fn main() {
 				let _ = app.deep_link().register_all();
 			}
 
-			async fn update() -> Result<(), anyhow::Error> {
-				let releases = frontend::updates::fetch_releases(frontend::updates::test_versions_default()).await?;
-				let Some(latest) = releases.into_iter().find(|r| r.newer) else { return Ok(()) };
-				let app = APP_HANDLE.get().unwrap();
-				let tag = latest.tag.clone();
-				let notes = if latest.notes.is_empty() { "No description".to_owned() } else { latest.notes.clone() };
-				app.dialog()
-					.message(format!("A new version of {PRODUCT_NAME}, {}, is available.\n\nWhat's new:\n{}", latest.tag, notes))
-					.title(format!("{PRODUCT_NAME} update available"))
-					.buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("Update now".to_owned(), "Later".to_owned()))
-					.show(move |yes| {
-						if yes {
-							tokio::spawn(async move {
-								let app = APP_HANDLE.get().unwrap();
-								if let Err(error) = frontend::updates::install(app, &tag).await {
-									log::warn!("Failed to install update: {error}");
-								}
-							});
-						}
-					});
-				Ok(())
-			}
-
-			if settings.value.updatecheck {
-				tokio::spawn(async {
-					if let Err(error) = update().await {
-						log::warn!("Failed to update application: {error}");
-					}
-				});
-			}
+			// (new versions are shown by the Orvo Studio card and a dot on Settings)
 
 			Ok(())
 		})

@@ -7,7 +7,7 @@
 	import { profileManager } from "$lib/singletons";
 
 	import { invoke } from "@tauri-apps/api/core";
-	import { ask, message } from "@tauri-apps/plugin-dialog";
+	import { ask, message } from "$lib/dialog";
 	import { tick } from "svelte";
 
 	export let device: DeviceInfo;

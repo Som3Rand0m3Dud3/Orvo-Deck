@@ -20,7 +20,8 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
-	import { ask, message, open } from "@tauri-apps/plugin-dialog";
+	import { ask, message } from "$lib/dialog";
+	import { open } from "@tauri-apps/plugin-dialog";
 
 	// @ts-expect-error
 	const fetch = window.fetchNative ?? window.fetch;

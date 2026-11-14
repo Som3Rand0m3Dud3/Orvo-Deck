@@ -9,7 +9,7 @@
 	// The NineDeck plugin does the work and reports progress with "pad_status" events.
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
-	import { ask } from "@tauri-apps/plugin-dialog";
+	import { ask } from "$lib/dialog";
 	import { onMount } from "svelte";
 
 	export let device: string;

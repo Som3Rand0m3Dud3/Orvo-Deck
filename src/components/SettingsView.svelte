@@ -13,7 +13,7 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
-	import { ask, message } from "@tauri-apps/plugin-dialog";
+	import { ask, message } from "$lib/dialog";
 
 	type Release = { tag: string; version: string; name: string; notes: string; date: string; page: string; installer: string | null; newer: boolean; current: boolean; prerelease: boolean };
 	let releases: Release[] | null = null;

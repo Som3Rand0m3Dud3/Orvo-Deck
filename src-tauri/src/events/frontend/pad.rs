@@ -261,3 +261,11 @@ pub async fn orvo_slider_refresh(device: String) -> Result<(), Error> {
 	}
 	Ok(())
 }
+
+/// "Welcome" / "updated" note from startup, shown once by the app's own pop-up.
+pub static STARTUP_NOTICE: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+#[command]
+pub fn orvo_take_startup_notice() -> Option<(String, String)> {
+	STARTUP_NOTICE.lock().unwrap().take()
+}
