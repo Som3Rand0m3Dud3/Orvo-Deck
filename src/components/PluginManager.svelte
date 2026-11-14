@@ -219,8 +219,8 @@
 		}
 	})();
 	listen("elgato_notice", ({ payload }: { payload: unknown }) => {
-		const link = typeof payload == "string" && payload ? `\n\nLink received: ${payload}` : "";
-		message(`Orvo couldn't install this plugin by itself. Download the plugin file from its Marketplace page, then open it or use "Install from file".${link}`, {
+		const text = typeof payload == "string" ? payload : "";
+		message(text && !text.startsWith("streamdeck://") ? text : `Orvo couldn't install this plugin by itself. Use Download on its Marketplace page, or "Install from file".${text ? `\n\nLink received: ${text}` : ""}`, {
 			title: "Elgato Marketplace",
 			buttons: { ok: $t("dialog.ok") },
 		});

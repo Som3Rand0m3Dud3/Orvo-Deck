@@ -70,10 +70,24 @@ pub fn extract<S: Read + Seek>(source: S, target_dir: &Path) -> Result<(), ZipEx
 		}
 	}
 
+	// Orvo: some archives (e.g. Elgato Marketplace downloads) wrap the plugin folder in extra
+	// folders. Paths then start at the `.sdPlugin` folder, and files outside it are skipped.
+	let is_plugin_dir = |c: &std::path::Component| c.as_os_str().to_string_lossy().to_lowercase().ends_with(".sdplugin");
+	let has_plugin_dir = (0..archive.len()).any(|i| archive.by_index(i).map(|f| f.mangled_name().components().any(|c| is_plugin_dir(&c))).unwrap_or(false));
+
 	debug!("Extracting to {}", target_dir.to_string_lossy());
 	for i in 0..archive.len() {
 		let mut file = archive.by_index(i)?;
 		let relative_path = file.mangled_name();
+		let relative_path: PathBuf = if has_plugin_dir {
+			let components: Vec<_> = relative_path.components().collect();
+			match components.iter().position(is_plugin_dir) {
+				Some(start) => components[start..].iter().collect(),
+				None => continue,
+			}
+		} else {
+			relative_path
+		};
 
 		if relative_path.to_string_lossy().is_empty() {
 			continue;

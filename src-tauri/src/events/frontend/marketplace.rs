@@ -6,7 +6,8 @@
 //! browser's own `fetch` back (see `NATIVE_FETCH_JS`).
 //!
 //! Installing: the Marketplace's "Open in Stream Deck" hands over `streamdeck://plugins/install/<id>`.
-//! Orvo asks Elgato for that item's download using the signed-in session, then installs it.
+//! Orvo asks Elgato for that item's download from inside the Marketplace page (exactly as the page
+//! itself would, with its own sign-in), reads the answer back, then installs it.
 //! "Download" is caught too: any downloaded file that is a plugin gets installed.
 
 use super::Error;
@@ -34,6 +35,7 @@ const NATIVE_FETCH_JS: &str = r#"(() => {
 static POPUPS: AtomicUsize = AtomicUsize::new(0);
 static LAST_ACCOUNT: Mutex<String> = Mutex::new(String::new());
 static PENDING: Mutex<Vec<InstallRequest>> = Mutex::new(Vec::new());
+static JOBS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Serialize)]
 pub struct InstallRequest {
@@ -167,51 +169,107 @@ fn handle_link(app: &AppHandle, link: &str) {
 	}
 }
 
-/// The signed-in session from the Marketplace web view's own cookies (`None` when signed out).
+/// Runs `body` (the inside of an async JS function) in the Marketplace page and returns what it
+/// returns, as the page itself would see it (its own sign-in, its own access to Elgato).
+async fn run_in_page(view: &Webview<tauri::Wry>, body: &str, timeout: std::time::Duration) -> Result<serde_json::Value, String> {
+	let started = std::time::Instant::now();
+
+	// The result of a script comes back JSON-encoded; a string result is encoded twice.
+	fn decode(raw: String) -> serde_json::Value {
+		match serde_json::from_str::<serde_json::Value>(&raw) {
+			Ok(serde_json::Value::String(inner)) => serde_json::from_str(&inner).unwrap_or(serde_json::Value::String(inner)),
+			Ok(value) => value,
+			Err(_) => serde_json::Value::Null,
+		}
+	}
+	async fn ask(view: &Webview<tauri::Wry>, js: String) -> Option<serde_json::Value> {
+		let (tx, rx) = std::sync::mpsc::channel::<String>();
+		view.eval_with_callback(js, move |result| {
+			let _ = tx.send(result);
+		})
+		.ok()?;
+		let raw = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(3)).ok())
+			.await
+			.ok()
+			.flatten()?;
+		Some(decode(raw))
+	}
+
+	// wait for a loaded Marketplace page
+	loop {
+		let ready = ask(view, "JSON.stringify(location.hostname === 'marketplace.elgato.com' && document.readyState === 'complete')".into()).await;
+		if ready == Some(serde_json::Value::Bool(true)) {
+			break;
+		}
+		if started.elapsed() > timeout {
+			return Err("The Marketplace page didn't finish loading.".into());
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+	}
+
+	let slot = format!("__orvo_job_{}", JOBS.fetch_add(1, Ordering::Relaxed));
+	let script = format!(
+		"(async () => {{ try {{ const value = await (async () => {{ {body} }})(); window.{slot} = {{ ok: true, value }}; }} catch (e) {{ window.{slot} = {{ ok: false, error: String(e) }}; }} }})(); null"
+	);
+	if view.eval(script).is_err() {
+		return Err("Couldn't run inside the Marketplace page.".into());
+	}
+	loop {
+		if let Some(result) = ask(view, format!("JSON.stringify(window.{slot} ?? null)")).await
+			&& !result.is_null()
+		{
+			let _ = view.eval(format!("delete window.{slot}"));
+			return if result["ok"] == serde_json::Value::Bool(true) {
+				Ok(result["value"].clone())
+			} else {
+				Err(result["error"].as_str().unwrap_or("unknown error").to_owned())
+			};
+		}
+		if started.elapsed() > timeout {
+			return Err("The Marketplace page didn't answer in time.".into());
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+	}
+}
+
+const SESSION_JS: &str = "const r = await fetch('/api/auth/session', { credentials: 'include' }); return r.ok ? await r.json() : null;";
+
+/// The signed-in session, read by the Marketplace page itself (`None` when signed out).
 async fn session(app: &AppHandle) -> Option<serde_json::Value> {
 	let view = marketplace(app).ok()?;
-	let site: Url = "https://marketplace.elgato.com/".parse().unwrap();
-	let cookies = match tauri::async_runtime::spawn_blocking(move || view.cookies_for_url(site)).await {
-		Ok(Ok(cookies)) => cookies,
-		_ => return None,
-	};
-	let header = cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; ");
-	let response = reqwest::Client::new()
-		.get("https://marketplace.elgato.com/api/auth/session")
-		.header("Cookie", header)
-		.header("Accept", "application/json")
-		.send()
-		.await
-		.ok()?;
-	let value: serde_json::Value = response.json().await.ok()?;
+	let value = run_in_page(&view, SESSION_JS, std::time::Duration::from_secs(20)).await.ok()?;
 	value["user"].is_object().then_some(value)
 }
 
-/// Asks Elgato for an item's download using the signed-in session, then installs it.
+/// Asks Elgato for an item's download from inside the Marketplace page, then installs it.
 async fn install_item(app: AppHandle, item: String) {
-	let Some(session) = session(&app).await else {
-		notice(&app, "Sign in to the Elgato Marketplace in Orvo's Elgato tab first, then press Open in Stream Deck again.".into());
-		return;
+	if item.is_empty() || !item.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+		return notice(&app, format!("Orvo received a Marketplace item it can't read: {item}"));
+	}
+	let view = match marketplace(&app) {
+		Ok(view) => view,
+		Err(error) => return notice(&app, format!("Couldn't open the Marketplace: {error:?}")),
 	};
-	let Some(token) = session["accessToken"].as_str() else {
-		notice(&app, "Signed in, but Elgato didn't give Orvo a download key. Use Download instead, or Install from file.".into());
-		return;
+	let script = format!(
+		"const s = await (await fetch('/api/auth/session', {{ credentials: 'include' }})).json();
+		if (!s || !s.user) return {{ signedOut: true }};
+		const r = await fetch('https://mp-gateway.elgato.com/items/{item}/purchase-link', {{
+			headers: {{ Authorization: 'Bearer ' + s.accessToken, 'Content-Type': 'application/json' }}
+		}});
+		return {{ status: r.status, body: await r.text(), hasToken: !!s.accessToken }};"
+	);
+	let result = match run_in_page(&view, &script, std::time::Duration::from_secs(30)).await {
+		Ok(result) => result,
+		Err(error) => return notice(&app, format!("Couldn't get this plugin from Elgato: {error}")),
 	};
-	let response = match reqwest::Client::new()
-		.get(format!("https://mp-gateway.elgato.com/items/{item}/purchase-link"))
-		.bearer_auth(token)
-		.header("Content-Type", "application/json")
-		.send()
-		.await
-	{
-		Ok(response) => response,
-		Err(error) => return notice(&app, format!("Couldn't reach Elgato: {error}")),
-	};
-	let status = response.status();
-	let body = response.text().await.unwrap_or_default();
-	let json: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+	if result["signedOut"] == serde_json::Value::Bool(true) {
+		return notice(&app, "Sign in to the Elgato Marketplace in Orvo's Elgato tab first, then press Open in Stream Deck again.".into());
+	}
+	let status = result["status"].as_u64().unwrap_or(0);
+	let body = result["body"].as_str().unwrap_or_default();
+	let json: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
 	match json["direct_link"].as_str() {
-		Some(link) if status.is_success() => {
+		Some(link) if (200..300).contains(&status) => {
 			let name = ["name", "product_name", "title"].iter().find_map(|k| json[*k].as_str()).unwrap_or("Elgato plugin").to_owned();
 			request_install(
 				&app,
@@ -224,7 +282,15 @@ async fn install_item(app: AppHandle, item: String) {
 		}
 		_ => {
 			let short: String = body.chars().take(300).collect();
-			notice(&app, format!("Elgato didn't give a download for this plugin (item {item}).\n\nElgato said: {status} {short}"));
+			let token = if result["hasToken"] == serde_json::Value::Bool(false) {
+				" (no download key in the sign-in)"
+			} else {
+				""
+			};
+			notice(
+				&app,
+				format!("Elgato didn't give a download for this plugin (item {item}){token}.\n\nElgato said: {status} {short}\n\nUse Download on the plugin's page instead."),
+			);
 		}
 	}
 }
