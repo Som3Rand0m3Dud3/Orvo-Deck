@@ -78,6 +78,17 @@
 		}
 	}
 
+	// A click only clears the selection when it also started on the background. Opening the action
+	// tray mid-click shrinks the pad, so the release can land beside the box that was pressed.
+	let pressStartedOnBox = false;
+	function notePress(event: PointerEvent) {
+		pressStartedOnBox = !!(event.target as HTMLElement | null)?.closest?.("canvas, button");
+	}
+	function clearOnBackground() {
+		if (!pressStartedOnBox) inspectedInstance.set(null);
+		pressStartedOnBox = false;
+	}
+
 	// Orvo: the action tray puts an action on the selected empty box (click a box, then click an action).
 	$: if ($placeAction && $placeAction.context.device == device.id && $placeAction.context.profile == profile.id) {
 		const { context, action } = $placeAction;
@@ -262,7 +273,8 @@
 		aria-label={device.name}
 		aria-describedby="grid-description"
 		tabindex="-1"
-		on:click={() => inspectedInstance.set(null)}
+		on:pointerdown|capture={notePress}
+		on:click={clearOnBackground}
 		on:keyup={() => inspectedInstance.set(null)}
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}

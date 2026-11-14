@@ -6,6 +6,7 @@
 
 	import Clipboard from "phosphor-svelte/lib/Clipboard";
 	import Copy from "phosphor-svelte/lib/Copy";
+	import Plus from "phosphor-svelte/lib/Plus";
 	import Trash from "phosphor-svelte/lib/Trash";
 	import InstanceEditor from "./InstanceEditor.svelte";
 
@@ -225,7 +226,7 @@
 		label + (slot ? ": " + slot.action.name + (state?.show && (state?.text_override || state?.text) ? " - " + (state.text_override || state.text) : "") : "");
 </script>
 
-<div class="relative" style={`transform: scale(${(112 /* desired inner size */ / size) * scale});`}>
+<div class="group relative" style={`transform: scale(${(112 /* desired inner size */ / size) * scale});`}>
 	<canvas
 		bind:this={canvas}
 		class="relative border-3 border-neutral-700 rounded-3xl outline-none outline-offset-2 outline-blue-500"
@@ -260,6 +261,12 @@
 		on:focus={onfocus}
 		on:contextmenu={contextMenu}
 	/>
+	{#if !slot && active && !isTouchPoint && (context?.controller == "Keypad" || context?.controller == "Encoder")}
+		<!-- Orvo Studio only: the pad's screen keeps empty boxes empty. -->
+		<div class="absolute inset-0 flex items-center justify-center pointer-events-none text-neutral-600 group-hover:text-neutral-400 transition-colors" aria-hidden="true">
+			<Plus size="40" weight="bold" />
+		</div>
+	{/if}
 	{#if isTouchPoint && !slot}
 		<div class="absolute left-1/4 top-1/2 w-1/2 border-t-4 border-neutral-700 pointer-events-none"></div>
 	{/if}

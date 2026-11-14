@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { trayScale } from "$lib/tray";
 	import { appUpdate } from "$lib/orvoUpdate";
 	import ClockClockwise from "phosphor-svelte/lib/ClockClockwise";
 	import ClockCounterClockwise from "phosphor-svelte/lib/ClockCounterClockwise";
@@ -181,6 +182,23 @@
 			<button class="px-4 h-9 rounded-lg text-sm" class:bg-neutral-900={theme == "dark"} class:text-neutral-100={theme == "dark"} on:click={() => setTheme("dark")}>Dark</button>
 			<button class="px-4 h-9 rounded-lg text-sm" class:bg-neutral-900={theme == "light"} class:text-neutral-100={theme == "light"} on:click={() => setTheme("light")}>Light</button>
 		</div>
+	</div>
+
+	<div class="flex flex-row items-center mx-2 mb-3 gap-3">
+		<label for="settings-tray-scale" class="text-neutral-400">Bottom panel size:</label>
+		<input
+			type="range"
+			min="75"
+			max="150"
+			step="5"
+			value={Math.round($trayScale * 100)}
+			on:input={(e) => trayScale.set(parseInt(e.currentTarget.value) / 100)}
+			id="settings-tray-scale"
+		/>
+		<span class="w-12 text-sm text-neutral-400 tabular-nums">{Math.round($trayScale * 100)}%</span>
+		{#if $trayScale != 1}
+			<button class="px-3 h-9 rounded-lg text-sm border border-neutral-600" on:click={() => trayScale.set(1)}>Reset</button>
+		{/if}
 	</div>
 
 	<div class="mx-2 mb-3 p-3 border border-neutral-600 rounded-lg">

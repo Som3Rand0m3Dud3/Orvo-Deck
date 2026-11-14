@@ -12,8 +12,12 @@
 	import { localisations } from "$lib/settings";
 	import { PRODUCT_NAME } from "$lib/singletons";
 
+	import { trayScale } from "$lib/tray";
+
 	import { invoke } from "@tauri-apps/api/core";
 	import { tick } from "svelte";
+	import { cubicOut } from "svelte/easing";
+	import { fly, slide, type TransitionConfig } from "svelte/transition";
 
 	// Orvo: the action tray under the keys. Category tabs on one scrolling row, two rows of
 	// action cubes, and an arrow that tucks the whole tray away.
@@ -47,7 +51,12 @@
 
 	let selected = read("orvo-tray-tab") ?? "";
 	$: if (sorted.length > 0 && !sorted.some(([name]) => name == selected)) selected = sorted[0][0];
+	// Cubes slide toward the tab you picked: a tab to the right pushes them left, and the other way.
+	let dir = 0;
 	function selectTab(name: string, event: Event) {
+		const from = query.trim() ? -1 : sorted.findIndex(([n]) => n == selected);
+		const to = sorted.findIndex(([n]) => n == name);
+		dir = from < 0 || to < 0 ? 0 : Math.sign(to - from);
 		selected = name;
 		query = "";
 		write("orvo-tray-tab", name);
@@ -57,6 +66,20 @@
 	$: nameOf = (action: Action): string => $localisations?.[action.plugin]?.[action.uuid]?.Name ?? action.name;
 
 	let query = "";
+	let lastSearching = false;
+	$: if (!!query.trim() != lastSearching) {
+		lastSearching = !!query.trim();
+		dir = 0;
+	}
+	$: gridKey = query.trim() ? "\u0000search" : selected;
+	const SLIDE = { duration: 220, easing: cubicOut, opacity: 1 };
+	function slideIn(node: Element): TransitionConfig {
+		return dir ? fly(node, { ...SLIDE, x: dir * (node.parentElement?.clientWidth ?? 600) }) : { duration: 0 };
+	}
+	function slideOut(node: Element): TransitionConfig {
+		return dir ? fly(node, { ...SLIDE, x: -dir * (node.parentElement?.clientWidth ?? 600) }) : { duration: 0 };
+	}
+
 	let shown: Action[] = [];
 	$: {
 		const lower = query.toLowerCase().trim();
@@ -78,6 +101,43 @@
 
 	// Minimized: only the arrow shows. The arrow, or clicking an empty box, pulls the tray back up.
 	let minimized = read("orvo-tray-min") == "1";
+
+	// Height of the cube area (screen pixels): three rows by default, drag the top edge to change it.
+	const ROW = 86;
+	const GAP = 6;
+	const rowsHeight = (rows: number, scale: number) => (rows * ROW + (rows - 1) * GAP) * scale;
+	let savedHeight = parseFloat(read("orvo-tray-height") ?? "");
+	let gridHeight = savedHeight > 0 ? savedHeight : rowsHeight(3, $trayScale);
+	let windowHeight = globalThis.innerHeight ?? 800;
+	$: minHeight = rowsHeight(1, $trayScale);
+	$: maxHeight = Math.max(minHeight, windowHeight * 0.55);
+	$: shownHeight = Math.min(maxHeight, Math.max(minHeight, gridHeight));
+	let resizing = false;
+	let startY = 0;
+	let startHeight = 0;
+	function startResize(event: PointerEvent) {
+		if (event.button != 0) return;
+		resizing = true;
+		startY = event.clientY;
+		startHeight = shownHeight;
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+		event.preventDefault();
+	}
+	function moveResize(event: PointerEvent) {
+		if (resizing) gridHeight = Math.min(maxHeight, Math.max(minHeight, startHeight + startY - event.clientY));
+	}
+	function endResize() {
+		if (!resizing) return;
+		resizing = false;
+		write("orvo-tray-height", String(Math.round(gridHeight)));
+	}
+	function resizeKey(event: KeyboardEvent) {
+		const step = event.key == "ArrowUp" ? 24 : event.key == "ArrowDown" ? -24 : 0;
+		if (!step) return;
+		event.preventDefault();
+		gridHeight = Math.min(maxHeight, Math.max(minHeight, shownHeight + step));
+		write("orvo-tray-height", String(Math.round(gridHeight)));
+	}
 	function setMinimized(value: boolean) {
 		minimized = value;
 		write("orvo-tray-min", value ? "1" : "0");
@@ -112,9 +172,34 @@
 	$: if (sorted && !minimized) tick().then(updateFade);
 </script>
 
-<svelte:window on:resize={updateFade} />
+<svelte:window
+	on:resize={() => {
+		windowHeight = globalThis.innerHeight;
+		updateFade();
+	}}
+/>
 
-<div class="relative shrink-0 bg-neutral-900 border-t border-neutral-700 select-none">
+<div class="relative shrink-0 bg-neutral-900 border-t border-neutral-700 select-none" class:cursor-ns-resize={resizing}>
+	{#if !minimized}
+		<!-- A focusable separator is the standard resize handle (arrow keys resize too). -->
+		<!-- svelte-ignore a11y-no-noninteractive-tabindex a11y-no-noninteractive-element-interactions -->
+		<div
+			class="absolute left-0 right-0 -top-1.5 h-3 z-[5] cursor-ns-resize"
+			role="separator"
+			aria-orientation="horizontal"
+			aria-label="Resize the actions panel"
+			aria-valuemin={Math.round(minHeight)}
+			aria-valuemax={Math.round(maxHeight)}
+			aria-valuenow={Math.round(shownHeight)}
+			tabindex="0"
+			title="Drag to resize"
+			on:pointerdown={startResize}
+			on:pointermove={moveResize}
+			on:pointerup={endResize}
+			on:pointercancel={endResize}
+			on:keydown={resizeKey}
+		></div>
+	{/if}
 	<button
 		class="absolute left-1/2 -translate-x-1/2 -top-[26px] z-10 flex items-center justify-center w-[72px] h-[26px] rounded-t-xl bg-neutral-900 border border-b-0 border-neutral-700 text-neutral-300 hover:text-neutral-100 transition-colors"
 		aria-label={minimized ? "Show actions" : "Hide actions"}
@@ -126,7 +211,8 @@
 	</button>
 
 	{#if !minimized}
-		<div class="flex flex-col gap-2 p-2.5">
+		<div transition:slide={{ duration: 200, easing: cubicOut }}>
+		<div class="flex flex-col gap-2 p-2.5" style={`zoom: ${$trayScale}`}>
 			<div class="flex flex-row items-center gap-2 min-w-0">
 				<div
 					bind:this={tabsEl}
@@ -173,7 +259,9 @@
 				</label>
 			</div>
 
-			<div class="tray-grid grid gap-1.5 overflow-y-auto" role="listbox" aria-label={query.trim() ? "Search results" : selected}>
+			<div class="relative overflow-hidden" style={`height: ${shownHeight / $trayScale}px`}>
+			{#key gridKey}
+			<div class="tray-grid absolute inset-0 grid gap-1.5 overflow-y-auto" role="listbox" aria-label={query.trim() ? "Search results" : selected} in:slideIn out:slideOut>
 				{#each shown as action (action.plugin + action.uuid)}
 					<div
 						class="flex flex-col items-center justify-center gap-1.5 h-[86px] px-1 rounded-xl bg-neutral-800 border border-neutral-700 hover:border-neutral-500 transition-colors {armed
@@ -206,6 +294,9 @@
 					<p class="col-span-full self-center text-center text-sm text-neutral-400">No actions found.</p>
 				{/each}
 			</div>
+			{/key}
+			</div>
+		</div>
 		</div>
 	{/if}
 </div>
@@ -235,11 +326,10 @@
 	.tray-tabs.fade-left.fade-right {
 		mask-image: linear-gradient(to right, transparent, black 2.5rem, black calc(100% - 2.5rem), transparent);
 	}
-	/* Always two rows of cubes; more than that scrolls. */
+	/* As many rows of cubes as the panel's height fits; more than that scrolls. */
 	.tray-grid {
 		grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
 		grid-auto-rows: 86px;
-		height: 178px;
 		align-content: start;
 	}
 	.tray-name {
