@@ -152,6 +152,8 @@ async fn main() {
 			frontend::property_inspector::open_url,
 			frontend::plugins::list_plugins,
 			frontend::plugins::install_plugin,
+			frontend::marketplace::orvo_open_marketplace,
+			frontend::marketplace::orvo_marketplace_sign_out,
 			frontend::plugins::remove_plugin,
 			frontend::plugins::reload_plugin,
 			frontend::plugins::show_settings_interface,

@@ -5,6 +5,7 @@ pub mod property_inspector;
 pub mod settings;
 pub mod updates;
 pub mod pad;
+pub mod marketplace;
 
 use crate::shared::{CATEGORIES, Category, DEVICES, DeviceInfo};
 

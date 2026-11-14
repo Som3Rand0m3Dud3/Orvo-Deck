@@ -6,6 +6,9 @@
 	import Gear from "phosphor-svelte/lib/Gear";
 	import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
 	import Robot from "phosphor-svelte/lib/Robot";
+	import SignOut from "phosphor-svelte/lib/SignOut";
+	import Storefront from "phosphor-svelte/lib/Storefront";
+	import UserCircle from "phosphor-svelte/lib/UserCircle";
 	import Trash from "phosphor-svelte/lib/Trash";
 	import WarningCircle from "phosphor-svelte/lib/WarningCircle";
 	import ListedPlugin from "./ListedPlugin.svelte";
@@ -19,6 +22,7 @@
 	import { actionList, deviceSelector, PRODUCT_NAME } from "$lib/singletons";
 
 	import { invoke } from "@tauri-apps/api/core";
+	import { listen } from "@tauri-apps/api/event";
 	import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 	import { ask, message } from "$lib/dialog";
 	import { open } from "@tauri-apps/plugin-dialog";
@@ -31,8 +35,9 @@
 		if (showPopup) installed = await invoke("list_plugins");
 	}, 1e3);
 
-	async function installPlugin(name: string, url: string | null, file: string | null, fallback_id: string | null) {
+	async function installPlugin(name: string, url: string | null, file: string | null, fallback_id: string | null, confirm: boolean = true) {
 		if (
+			confirm &&
 			!file &&
 			!(await ask($t("plugin_manager.install.prompt"), {
 				title: $t("plugin_manager.install.title", { name }),
@@ -186,6 +191,48 @@
 	let plugins: { [id: string]: GitHubPlugin };
 	(async () => (plugins = await (await fetch("https://openactionapi.github.io/plugins/catalogue.json")).json()))();
 
+	// Orvo: Elgato Marketplace. It opens in its own window; Orvo installs what you get there.
+	type ElgatoAccount = { signed_in: boolean; name: string; email: string };
+	let elgato: ElgatoAccount = { signed_in: false, name: "", email: "" };
+	try {
+		elgato = { ...elgato, ...JSON.parse(localStorage.getItem("orvo-elgato-account") ?? "{}") };
+	} catch {}
+	let accountMenu = false;
+	$: elgatoLabel = elgato.name || elgato.email || "Elgato account";
+	listen("elgato_account", ({ payload }: { payload: ElgatoAccount }) => {
+		elgato = payload;
+		try {
+			localStorage.setItem("orvo-elgato-account", JSON.stringify(payload));
+		} catch {}
+	});
+	listen("elgato_install", ({ payload }: { payload: { name: string; url: string | null; file: string | null } }) => {
+		showPopup = true;
+		storeTab = "elgato";
+		installPlugin(payload.name, payload.url, payload.file, null, false);
+	});
+	listen("elgato_notice", () => {
+		message("Orvo couldn't install this plugin by itself. Download the plugin file from its Marketplace page, then use \"Install from file\".", {
+			title: "Elgato Marketplace",
+			buttons: { ok: $t("dialog.ok") },
+		});
+	});
+	async function openMarketplace() {
+		accountMenu = false;
+		try {
+			await invoke("orvo_open_marketplace", { page: null });
+		} catch (error: any) {
+			message(String(error), { title: "Elgato Marketplace", buttons: { ok: $t("dialog.ok") } });
+		}
+	}
+	async function signOutElgato() {
+		accountMenu = false;
+		try {
+			await invoke("orvo_marketplace_sign_out");
+		} catch (error: any) {
+			message(String(error), { title: "Elgato Marketplace", buttons: { ok: $t("dialog.ok") } });
+		}
+	}
+
 	// Orvo: the store has tabs. "All" shows (and searches) every kind; Elgato is coming later.
 	type StoreTab = "all" | "open" | "elgato";
 	let storeTab: StoreTab = "all";
@@ -245,8 +292,42 @@
 
 <Popup show={showPopup} label={$t("plugin_manager.title")}>
 	<svelte:fragment slot="header">
-		<button class="mr-2 my-1 float-right text-xl text-neutral-300" on:click={() => (showPopup = false)} aria-label={$t("settings.close")}>✕</button>
-		<h2 class="m-2 font-semibold text-xl text-neutral-300">{$t("plugin_manager.title")}</h2>
+		<div class="flex flex-row items-center gap-2">
+			<h2 class="m-2 grow font-semibold text-xl text-neutral-300">{$t("plugin_manager.title")}</h2>
+			<div class="relative">
+				{#if elgato.signed_in}
+					<button
+						class="flex items-center gap-2 h-9 px-3 rounded-full bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600 transition-colors"
+						aria-haspopup="menu"
+						aria-expanded={accountMenu}
+						title="Signed in to the Elgato Marketplace"
+						on:click={() => (accountMenu = !accountMenu)}
+					>
+						<UserCircle size="18" />
+						<span class="max-w-48 truncate">{elgatoLabel}</span>
+					</button>
+					{#if accountMenu}
+						<div role="menu" class="absolute right-0 top-11 z-40 w-56 p-1 rounded-lg bg-neutral-700 border border-neutral-600 shadow-lg">
+							{#if elgato.email && elgato.name}<p class="px-3 py-2 text-xs text-neutral-400 truncate">{elgato.email}</p>{/if}
+							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={openMarketplace}>
+								<Storefront size="16" />Open Elgato Marketplace
+							</button>
+							<button role="menuitem" class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-left text-neutral-200 hover:bg-neutral-600" on:click={signOutElgato}>
+								<SignOut size="16" />Sign out
+							</button>
+						</div>
+					{/if}
+				{:else}
+					<button
+						class="flex items-center gap-2 h-9 px-3 rounded-full bg-neutral-700 border border-neutral-600 text-sm text-neutral-200 hover:bg-neutral-600 transition-colors"
+						on:click={openMarketplace}
+					>
+						<UserCircle size="18" />Sign in with Elgato
+					</button>
+				{/if}
+			</div>
+			<button class="mr-2 my-1 text-xl text-neutral-300" on:click={() => (showPopup = false)} aria-label={$t("settings.close")}>✕</button>
+		</div>
 	</svelte:fragment>
 
 	<h2 class="mx-2 mt-4 mb-2 text-lg text-neutral-400">{$t("plugin_manager.installed")}</h2>
@@ -377,9 +458,17 @@
 			</div>
 		{/if}
 	{:else}
-		<div class="mx-2 mt-6 p-6 rounded-xl border border-dashed border-neutral-600 text-center">
-			<p class="font-semibold text-neutral-300">Elgato plugins are coming soon</p>
-			<p class="mt-1 text-sm text-neutral-400">For now, download a plugin from the Elgato Marketplace and use "{$t("plugin_manager.install_from_file")}" above.</p>
+		<div class="mx-2 mt-6 p-6 rounded-xl border border-neutral-600 text-center">
+			<Storefront size="36" class="mx-auto text-neutral-300" />
+			<p class="mt-2 font-semibold text-neutral-200">Elgato Marketplace</p>
+			<p class="mt-1 text-sm text-neutral-400">
+				{elgato.signed_in ? `Signed in as ${elgatoLabel}.` : "Sign in with your Elgato account (free) to get Marketplace plugins."}
+				Press <strong>Get</strong>, then <strong>Open in Stream Deck</strong>, and Orvo installs the plugin.
+			</p>
+			<button class="mt-4 px-4 h-10 rounded-lg text-sm font-semibold text-white" style="background: var(--orvo-accent)" on:click={openMarketplace}>
+				{elgato.signed_in ? "Browse the Elgato Marketplace" : "Sign in and browse"}
+			</button>
+			<p class="mt-3 text-xs text-neutral-500">Works through Elgato's website. If a plugin won't install by itself, download its file and use "{$t("plugin_manager.install_from_file")}".</p>
 		</div>
 	{/if}
 </Popup>
