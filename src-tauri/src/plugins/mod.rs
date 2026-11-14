@@ -1,5 +1,6 @@
 pub mod info_param;
 pub mod manifest;
+pub mod node_runtime;
 mod webserver;
 
 use crate::APP_HANDLE;
@@ -244,13 +245,10 @@ pub async fn initialise_plugin(path: path::PathBuf, spawner_tx: mpsc::Sender<Spa
 
 		INSTANCES.lock().await.insert(plugin_uuid, PluginInstance::Webview);
 	} else if code_path.to_lowercase().ends_with(".js") || code_path.to_lowercase().ends_with(".mjs") || code_path.to_lowercase().ends_with(".cjs") {
-		// Check for Node.js installation and version in one go.
-		let command = if is_flatpak() { "flatpak-spawn" } else { "node" };
-		let extra_args = if is_flatpak() { vec!["--host", "node"] } else { vec![] };
-		let version_output = Command::new(command).args(&extra_args).arg("--version").output();
-		if version_output.is_err() || String::from_utf8(version_output.unwrap().stdout).unwrap().trim() < "v20.0.0" {
-			return Err(anyhow!("Node.js version 20.0.0 or higher is required"));
-		}
+		// Orvo's own Node.js, a system Node.js 20+, or a one-time download (Windows).
+		let node = node_runtime::resolve().await?;
+		let command = node.program;
+		let extra_args = node.pre_args;
 
 		let info = info_param::make_info(plugin_uuid.to_owned(), manifest.version, true).await;
 		let log_file = fs::File::create(log_dir().join("plugins").join(format!("{plugin_uuid}.log")))?;

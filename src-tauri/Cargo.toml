@@ -1,6 +1,6 @@
 [package]
 name = "opendeck"
-version = "0.5.0"
+version = "0.5.1"
 description = "Use stream controllers"
 authors = ["Aman Khanna (nekename)"]
 license = "GPL-3.0-or-later"
@@ -46,6 +46,7 @@ os_info = "3.14"
 urlencoding = "2.1"
 base64 = "0.22"
 reqwest = { version = "0.13", features = ["json"] }
+sha2 = "0.10"
 zip = { version = "6.0", default-features = false, features = ["deflate", "zstd"] }
 active-win-pos-rs = "0.10"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
