@@ -84,6 +84,9 @@ except (OSError, ValueError):
     pass
 repo_cache = prev.get("repos", {})  # "owner/repo" -> {etag, asset, result}
 asset_cache = prev.get("assets", {})  # download url -> result (or {"skip": reason})
+# Retry anything that failed for a reason other than encryption (the reader may have improved).
+asset_cache = {u: r for u, r in asset_cache.items() if "skip" not in r or str(r["skip"]).startswith("encrypted")}
+repo_cache = {k: v for k, v in repo_cache.items() if not (isinstance(v.get("result"), dict) and "skip" in v["result"])}
 new_repo_cache = {}
 
 # ---------------------------------------------------------------- candidates by repo
@@ -278,16 +281,19 @@ def read_plugin(url, allow_full=False):
         except Exception as e2:  # noqa: BLE001
             return {"skip": f"download: {e2}"[:200]}
     try:
-        names = zf.namelist()
+        # Zips made on Windows may use "\\" in paths: match on "/" but read with the real name.
+        real = {n.replace("\\", "/"): n for n in zf.namelist()}
+        names = list(real)
         inner = [n for n in names if n.lower().endswith((".streamdeckplugin",))]
         if inner and not any(n.lower().endswith("manifest.json") for n in names):
-            zf = zipfile.ZipFile(io.BytesIO(zf.read(inner[0])))
-            names = zf.namelist()
+            zf = zipfile.ZipFile(io.BytesIO(zf.read(real[inner[0]])))
+            real = {n.replace("\\", "/"): n for n in zf.namelist()}
+            names = list(real)
         manifests = sorted((n for n in names if re.search(r"[^/]+\.sdplugin/manifest\.json$", n, re.I)), key=len)
         if not manifests:
             return {"skip": "no manifest"}
         mpath = manifests[0]
-        raw = zf.read(mpath)
+        raw = zf.read(real[mpath])
         if raw.startswith(b"ELGATO"):
             return {"skip": "encrypted (Elgato Marketplace build)"}
         manifest = json.loads(raw.decode("utf-8-sig"))
@@ -298,9 +304,9 @@ def read_plugin(url, allow_full=False):
         icon = manifest.get("Icon")
         if icon:
             for cand in (f"{folder}/{icon}@2x.png", f"{folder}/{icon}.png", f"{folder}/{icon}"):
-                if cand in names:
+                if cand in real:
                     try:
-                        data = zf.read(cand)
+                        data = zf.read(real[cand])
                         if len(data) < 400_000:
                             fname = re.sub(r"[^A-Za-z0-9._-]", "_", pid) + ".png"
                             with open(os.path.join(ICONS, fname), "wb") as f:
@@ -329,7 +335,17 @@ plugins = {}  # id -> entry
 used_api = 0
 
 
+def by_words(entry):
+    """A plugin that says it is for one system (e.g. "… on Linux") is taken at its word."""
+    text = f"{entry.get('name') or ''} {entry.get('description') or ''}".lower()
+    says = [os_ for os_, pat in (("linux", r"\blinux\b"), ("mac", r"\bmac ?os\b|\bmacos\b"), ("windows", r"\bwindows\b")) if re.search(pat, text)]
+    if len(says) == 1 and says[0] != "windows":
+        entry["platforms"], entry["platforms_known"] = says, True
+    return entry
+
+
 def put(entry):
+    entry = by_words(entry)
     have = plugins.get(entry["id"])
     if have and (have.get("updated") or "") >= (entry.get("updated") or ""):
         return
@@ -413,13 +429,13 @@ for a in archive:
     if res and "skip" in res and res["skip"].startswith("encrypted"):
         continue
     known = bool(res and "skip" not in res and res.get("platforms"))
-    plugins[pid] = {
+    plugins[pid] = by_words({
         "id": pid, "name": a.get("name"), "author": a.get("author"), "description": a.get("description"),
         "source": "archive", "via": "archive", "repository": "", "download_url": url,
         "version": (res or {}).get("version"), "updated": None,
         "platforms": (res or {}).get("platforms") if known else None, "platforms_known": known,
         "icon": f"https://plugins.amankhanna.me/icons/{pid}.png", "flags": None,
-    }
+    })
     archived += 1
 log(f"archive: {len(archive)} listed, {archived} added, {new_reads} read this run")
 
