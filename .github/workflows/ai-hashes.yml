@@ -1,0 +1,22 @@
+name: ai-hashes
+on:
+  push:
+    branches: [ai-probe]
+    paths: [".github/workflows/ai-hashes.yml"]
+jobs:
+  hashes:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -e
+          mkdir d && cd d
+          curl -fsSL --retry 5 -o ort.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.24.4/microsoft.ml.onnxruntime.directml.1.24.4.nupkg
+          curl -fsSL --retry 5 -o dml.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg
+          curl -fsSL --retry 5 -o contentvec.onnx https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/main/contentvec_768l12.onnx
+          curl -fsSL --retry 5 -o rmvpe.onnx https://huggingface.co/Scicom-intl/rmvpe-onnx/resolve/main/rmvpe.onnx
+          ls -l
+          sha256sum *
+          unzip -l ort.nupkg | grep -iE "win-x64|\.dll" | head -20
+          unzip -l dml.nupkg | grep -iE "x64|\.dll" | head -20
+          unzip -p ort.nupkg runtimes/win-x64/native/onnxruntime.dll | sha256sum
+          unzip -p dml.nupkg bin/x64-win/DirectML.dll | sha256sum
