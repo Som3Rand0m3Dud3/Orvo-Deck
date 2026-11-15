@@ -142,7 +142,31 @@ async fn install() -> anyhow::Result<()> {
 			continue;
 		}
 		let bytes = match f.inner {
-			Some(inner) => fetch_from_zip(&client, f.url, inner, &mut |n| emit_progress(Progress { done: done + n, total, file: f.name })).await?,
+			Some(inner) => {
+				let quick = if std::env::var("ORVO_AI_NO_RANGE").is_ok() {
+					Err(anyhow::anyhow!("range downloads turned off"))
+				} else {
+					fetch_from_zip(&client, f.url, inner, &mut |n| emit_progress(Progress { done: done + n, total, file: f.name })).await
+				};
+				match quick {
+					Ok(b) => b,
+					Err(e) => {
+						// some servers / networks refuse partial downloads: get the whole package instead
+						log::warn!("AI engine: partial download of {} failed ({e:#}); downloading the whole package", f.name);
+						let size = f.size;
+						Some(
+							fetch_whole_zip(&client, f.url, inner, &mut |n, of| {
+								emit_progress(Progress {
+									done: done + n * size / of.max(1),
+									total,
+									file: f.name,
+								})
+							})
+							.await?,
+						)
+					}
+				}
+			}
 			None => fetch(&client, f.url, &dest, &mut |n| emit_progress(Progress { done: done + n, total, file: f.name })).await?,
 		};
 		if let Some(bytes) = bytes {
@@ -157,6 +181,14 @@ async fn install() -> anyhow::Result<()> {
 		emit_progress(Progress { done, total, file: f.name });
 	}
 	tokio::fs::write(dir.join("ready"), b"1").await?;
+	if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+		while let Ok(Some(e)) = rd.next_entry().await {
+			let n = e.file_name().to_string_lossy().to_string();
+			if n.ends_with(".pkg") || n.ends_with(".part") {
+				let _ = tokio::fs::remove_file(e.path()).await;
+			}
+		}
+	}
 	Ok(())
 }
 
@@ -196,6 +228,39 @@ async fn fetch(client: &reqwest::Client, url: &str, dest: &Path, progress: &mut 
 	drop(out);
 	tokio::fs::rename(&part, dest).await?;
 	Ok(None)
+}
+
+/// Downloads a whole package once (kept until the install ends) and takes one file out of it.
+async fn fetch_whole_zip(client: &reqwest::Client, url: &str, inner: &str, progress: &mut (dyn FnMut(u64, u64) + Send)) -> anyhow::Result<Vec<u8>> {
+	use tokio::io::AsyncWriteExt;
+	let pkg = engine_dir().join(format!("{}.pkg", url.rsplit('/').next().unwrap_or("package")));
+	if !pkg.is_file() {
+		let part = pkg.with_extension("part");
+		let mut resp = client.get(url).send().await?.error_for_status()?;
+		let of = resp.content_length().unwrap_or(0);
+		let mut out = tokio::fs::File::create(&part).await?;
+		let mut n = 0u64;
+		while let Some(chunk) = resp.chunk().await? {
+			out.write_all(&chunk).await?;
+			n += chunk.len() as u64;
+			progress(n, of.max(n));
+		}
+		out.flush().await?;
+		drop(out);
+		tokio::fs::rename(&part, &pkg).await?;
+	}
+	let inner = inner.to_owned();
+	let pkg2 = pkg.clone();
+	tokio::task::spawn_blocking(move || extract_from_zip_file(&pkg2, &inner)).await?
+}
+
+fn extract_from_zip_file(pkg: &Path, inner: &str) -> anyhow::Result<Vec<u8>> {
+	use std::io::Read;
+	let mut zip = zip::ZipArchive::new(std::fs::File::open(pkg)?)?;
+	let mut entry = zip.by_name(inner).map_err(|_| anyhow::anyhow!("{inner} isn't in the package"))?;
+	let mut out = Vec::with_capacity(entry.size() as usize);
+	entry.read_to_end(&mut out)?;
+	Ok(out)
 }
 
 async fn range(client: &reqwest::Client, url: &str, from: u64, len: u64) -> anyhow::Result<Vec<u8>> {
@@ -742,4 +807,24 @@ fn worker(
 		});
 	}
 	Some((cv, rm, gpu))
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn takes_one_file_out_of_a_package() {
+		use std::io::Write;
+		let p = std::env::temp_dir().join("orvo-ai-test.pkg");
+		let mut z = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+		let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+		z.start_file("runtimes/win-x64/native/a.dll", opts).unwrap();
+		z.write_all(&vec![7u8; 100_000]).unwrap();
+		z.start_file("bin/x64-win/DirectML.dll", opts).unwrap();
+		z.write_all(b"hello dml").unwrap();
+		z.finish().unwrap();
+		assert_eq!(super::extract_from_zip_file(&p, "bin/x64-win/DirectML.dll").unwrap(), b"hello dml");
+		assert_eq!(super::extract_from_zip_file(&p, "runtimes/win-x64/native/a.dll").unwrap().len(), 100_000);
+		assert!(super::extract_from_zip_file(&p, "nope").is_err());
+		let _ = std::fs::remove_file(p);
+	}
 }
