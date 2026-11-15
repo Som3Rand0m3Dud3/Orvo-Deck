@@ -1,0 +1,11 @@
+[package]
+name = "aitest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "directml", "std", "api-24"] }
+libloading = "0.8"
+anyhow = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
