@@ -12,7 +12,7 @@ jobs:
         with: { python-version: "3.11" }
       - name: deps
         run: |
-          pip install --quiet pip install --quiet onnxruntime==1.22.1 numpy soundfile scipy onnx
+          pip install --quiet onnxruntime==1.22.1 numpy soundfile scipy onnx
           pip install --quiet torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
           sudo apt-get install -y -qq espeak-ng > /dev/null
       - name: models
