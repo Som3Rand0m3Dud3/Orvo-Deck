@@ -23,7 +23,7 @@ jobs:
           curl -sSL -o voice.pth https://huggingface.co/licyk/rvc-model/resolve/main/voices/zhanzhanv2-xi/zhanzhanv2-xi.pth
           curl -sSL -o pitch_onnx.py https://huggingface.co/Scicom-intl/rmvpe-onnx/resolve/main/pitch_onnx.py || true
           ls -la
-          git clone -q --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI ../rvc; ls ../rvc
+          git clone -q --depth 1 --branch 2.2.231006 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI ../rvc; ls ../rvc/infer/modules/onnx
       - name: probe
         run: python .github/ai-probe.py
       - uses: actions/upload-artifact@v4

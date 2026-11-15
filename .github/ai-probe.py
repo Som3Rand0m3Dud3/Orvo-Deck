@@ -12,7 +12,7 @@ cv = info("m/contentvec.onnx"); rm = info("m/rmvpe.onnx")
 if os.path.exists("m/pitch_onnx.py"):
     src = open("m/pitch_onnx.py").read(); print("---- pitch_onnx.py ----"); print(src[:6000])
 # export voice pth -> onnx with RVC's own exporter
-sys.path.insert(0, "rvc")
+sys.path.insert(0, os.path.abspath("rvc")); os.chdir(os.path.abspath("."))
 cpt = torch.load("m/voice.pth", map_location="cpu", weights_only=False)
 print("pth keys", list(cpt.keys()), "config", cpt.get("config"), "sr", cpt.get("sr"), "f0", cpt.get("f0"), "version", cpt.get("version"))
 import glob; print("exporters", glob.glob("rvc/**/onnx/export.py", recursive=True))
