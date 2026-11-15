@@ -62,12 +62,13 @@
 	$: mixerCubes = [
 		...(voiceAction
 			? [
-					...($soundboard?.voice_presets ?? []).filter((p) => p.id != "off").map((p) => ({ id: p.id, name: p.name })),
-					...($soundboard?.config.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name })),
+					...($soundboard?.voice_presets ?? []).filter((p) => p.id != "off").map((p) => ({ id: p.id, name: p.name, image: null as string | null | undefined })),
+					...($soundboard?.config.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name, image: null as string | null | undefined })),
+					...($soundboard?.config.ai_voices ?? []).map((v) => ({ id: `ai:${v.id}`, name: v.name, image: v.image })),
 				].map((p): SoundAction => ({
 					...voiceAction!,
 					name: p.name,
-					icon: voiceIcon(p.id, p.name),
+					icon: voiceIcon(p.id, p.name, p.image),
 					tooltip: `Press to switch "${p.name}" on or off (hold mode in the key's settings)`,
 					orvoPreset: { settings: { preset: p.id, mode: "toggle", name: p.name }, title: p.name },
 				}))

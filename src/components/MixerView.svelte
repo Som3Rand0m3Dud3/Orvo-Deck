@@ -138,8 +138,10 @@
 	$: presets = [
 		...(state?.voice_presets ?? []).map((p) => ({ id: p.id, name: p.name, hint: p.hint, mine: false })),
 		...(config?.my_voices ?? []).map((v) => ({ id: `my:${v.id}`, name: v.name, hint: "Your saved voice", mine: true })),
+		...(config?.ai_voices ?? []).map((v) => ({ id: `ai:${v.id}`, name: v.name, hint: "AI voice", mine: true, image: v.image })),
 	];
-	const iconUrl = (id: string, name: string) => voiceIcon(id, name).replace(/^opendeck\//, "/");
+	const iconUrl = (id: string, name: string, image?: string | null) => voiceIcon(id, name, image).replace(/^opendeck\//, "/");
+	const imageOf = (p: object) => ("image" in p ? (p.image as string | null) : null);
 	$: activeVoice = config?.voice_preset && config.voice_preset != "off" ? presets.find((p) => p.id == config!.voice_preset) : undefined;
 	async function pickVoice(id: string) {
 		await invoke("sb_set_voice", { id });
@@ -312,7 +314,7 @@
 						class="flex flex-wrap items-center gap-3 px-3.5 py-2.5 rounded-xl border bg-[#1D2A44] text-sm text-neutral-100"
 						style="border-color: var(--orvo-accent)"
 					>
-						<img src={iconUrl(activeVoice.id, activeVoice.name)} alt="" class="w-8 h-8 rounded-lg" />
+						<img src={iconUrl(activeVoice.id, activeVoice.name, imageOf(activeVoice))} alt="" class="w-8 h-8 rounded-lg" />
 						<span class="grow">Voice changer on: <strong>{activeVoice.name}</strong>. <span class="text-neutral-300">Your effects below are paused.</span></span>
 						<button class="underline" style="color: #7FA8FF" on:click={() => appView.set("voices")}>Voices</button>
 						<button class="px-3 h-8 rounded-lg text-sm text-neutral-100 bg-neutral-800 border border-neutral-600 hover:bg-neutral-700" on:click={() => pickVoice("off")}

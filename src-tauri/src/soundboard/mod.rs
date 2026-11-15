@@ -3,6 +3,8 @@
 //!
 //! Files: <config>/soundboard/sounds.json, settings.json and files/<id>.<ext>.
 
+pub mod ai;
+pub mod ai_core;
 pub mod decode;
 pub mod effects;
 pub mod engine;
@@ -120,6 +122,9 @@ pub struct Config {
 	/// Since 0.8.0 `voice_fx` holds only the manual effects; the voice changer is separate.
 	#[serde(default)]
 	pub voices_v2: bool,
+	/// AI voices (RVC models) the user added.
+	#[serde(default)]
+	pub ai_voices: Vec<ai::AiVoice>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -218,6 +223,7 @@ fn save(st: &State) {
 }
 
 fn apply_levels(st: &State) {
+	ai::sync(&st.config, st.engine.is_some());
 	if let Some(engine) = &st.engine {
 		let c = &st.config;
 		let l = &engine.levels;
@@ -429,12 +435,17 @@ fn voice_ids(c: &Config) -> Vec<String> {
 		.iter()
 		.map(|p| p.id.to_string())
 		.chain(c.my_voices.iter().map(|v| format!("my:{}", v.id)))
+		.chain(c.ai_voices.iter().map(|v| format!("ai:{}", v.id)))
 		.collect()
 }
 
 fn chain_for(c: &Config, id: &str) -> Option<Vec<effects::EffectSpec>> {
 	if let Some(my) = id.strip_prefix("my:") {
 		return c.my_voices.iter().find(|v| v.id == my).map(|v| v.chain.clone());
+	}
+	// AI voices replace the voice entirely; no effects run with them
+	if let Some(ai) = id.strip_prefix("ai:") {
+		return c.ai_voices.iter().find(|v| v.id == ai).map(|_| Vec::new());
 	}
 	effects::preset_chain(id)
 }

@@ -46,7 +46,7 @@
 	// what a placed key looked like before any edit
 	function original(i: ActionInstance): Look {
 		const s: any = i.settings ?? {};
-		if (action.orvoPreset) return { image: voiceIcon(s.preset ?? "", s.name ?? ""), name: "" };
+		if (action.orvoPreset) return { image: action.icon || voiceIcon(s.preset ?? "", s.name ?? ""), name: "" };
 		return { image: i.action.states?.[0]?.image || i.action.icon, name: action.orvoSound ? action.orvoSound.name : (i.action.states?.[0]?.text ?? "") };
 	}
 

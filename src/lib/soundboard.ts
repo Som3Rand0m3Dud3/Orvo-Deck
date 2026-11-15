@@ -69,7 +69,11 @@ export type SoundboardConfig = {
 	my_voices: { id: string; name: string; chain: EffectSpec[] }[];
 	voice_tweaks: { [voice: string]: VoiceTweak };
 	voices_v2: boolean;
+	ai_voices: AiVoice[];
 };
+export type AiVoice = { id: string; name: string; file: string; sr: number; window: number; pitch: number; quality: string; image?: string | null };
+export type AiStatus = { state: string; message: string | null; gpu: boolean; compute_ms: number; block_ms: number; delay_ms: number };
+export type AiState = { supported: boolean; installed: boolean; installing: boolean; download_mb: number; status: AiStatus };
 export type VoiceTweak = { pitch: number; amount: number };
 
 // ---------------- Mixer effects
@@ -271,10 +275,15 @@ export const SB_SLIDERS = ["com.ninedeck.device.sbmic", "com.ninedeck.device.sbs
 export type SoundAction = Action & { orvoSound?: { id: string; name: string }; orvoPreset?: { settings: any; title: string } };
 
 /** The picture for a voice: Orvo's icon, or a big first letter for your own voices. */
-export function voiceIcon(id: string, name = ""): string {
-	if (!id.startsWith("my:")) return `opendeck/voices/${id}.png`;
+export function voiceIcon(id: string, name = "", image?: string | null): string {
+	if (image) return image;
+	if (!id.startsWith("my:") && !id.startsWith("ai:")) return `opendeck/voices/${id}.png`;
 	const letter = (name.trim()[0] ?? "?").toUpperCase().replace(/[<&>"]/g, "");
-	const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" rx="22" fill="#1C1F26"/><text x="72" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="84" font-weight="700" text-anchor="middle" fill="#4F8CFF">${letter}</text></svg>`;
+	// AI voices get a small "AI" corner tag
+	const tag = id.startsWith("ai:")
+		? `<rect x="88" y="10" width="46" height="28" rx="8" fill="#4F8CFF"/><text x="111" y="31" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="700" text-anchor="middle" fill="#fff">AI</text>`
+		: "";
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" rx="22" fill="#1C1F26"/><text x="72" y="104" font-family="Segoe UI,Arial,sans-serif" font-size="84" font-weight="700" text-anchor="middle" fill="${id.startsWith("ai:") ? "#F2F4F8" : "#4F8CFF"}">${letter}</text>${tag}</svg>`;
 	return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
@@ -293,7 +302,8 @@ export async function finishSoundKey(instance: ActionInstance | null, action: So
 	}
 	// voices show a picture (no words); sounds show their name
 	const preset = action.orvoPreset?.settings?.preset as string | undefined;
-	const base = preset ? { image: voiceIcon(preset, action.orvoPreset!.title), name: "" } : {};
+	const aiImage = preset?.startsWith("ai:") ? get(soundboard)?.config.ai_voices?.find((v) => `ai:${v.id}` == preset)?.image : undefined;
+	const base = preset ? { image: voiceIcon(preset, action.orvoPreset!.title, aiImage), name: "" } : {};
 	const title = action.orvoSound?.name;
 	if (!look && !preset && title == undefined) return updated;
 	return applyLook(updated, { ...base, ...look }, title);
