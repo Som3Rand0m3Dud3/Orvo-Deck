@@ -25,6 +25,6 @@ jobs:
           ls -la
           git clone -q --depth 1 --branch 2.2.231006 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI ../rvc; sed -i "s/                x = flow(x, x_mask, g=g, reverse=reverse)/                x, _ = flow(x, x_mask, g=g, reverse=reverse)/" ../rvc/infer/lib/infer_pack/models_onnx.py; grep -c "x, _ = flow" ../rvc/infer/lib/infer_pack/models_onnx.py
       - name: probe
-        run: python .github/ai-probe.py
+        run: python .github/ai-probe.py 2>&1 | grep -v Warning
       - uses: actions/upload-artifact@v4
         with: { name: probe, path: "out/*" }
