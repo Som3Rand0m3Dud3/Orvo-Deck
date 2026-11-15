@@ -386,6 +386,10 @@ impl VoiceChain {
 		if !self.effects.is_empty() {
 			self.effects.process(&mut self.frame);
 		}
+		// AI voice: swaps the voice for the converted one (a block later)
+		if super::ai::ACTIVE.load(Ordering::Relaxed) {
+			super::ai::exchange(&mut self.frame);
+		}
 		let m = self.proc.meter;
 		store(&self.levels.meter_level, m.level_db);
 		store(&self.levels.meter_out, m.out_db);
