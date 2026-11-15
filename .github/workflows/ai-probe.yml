@@ -1,0 +1,30 @@
+name: ai-probe
+on:
+  push:
+    branches: [ai-probe]
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: deps
+        run: |
+          pip install --quiet onnxruntime==1.22.1 numpy soundfile scipy
+          pip install --quiet torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
+          sudo apt-get install -y -qq espeak-ng > /dev/null
+      - name: models
+        run: |
+          mkdir -p m && cd m
+          curl -sSL -o contentvec.onnx https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/main/contentvec_768l12.onnx
+          curl -sSL -o rmvpe.onnx https://huggingface.co/Scicom-intl/rmvpe-onnx/resolve/main/rmvpe.onnx
+          curl -sSL -o voice.pth https://huggingface.co/licyk/rvc-model/resolve/main/voices/zhanzhanv2-xi/zhanzhanv2-xi.pth
+          curl -sSL -o pitch_onnx.py https://huggingface.co/Scicom-intl/rmvpe-onnx/resolve/main/pitch_onnx.py || true
+          ls -la
+          git clone -q --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI ../rvc
+      - name: probe
+        run: python .github/ai-probe.py
+      - uses: actions/upload-artifact@v4
+        with: { name: probe, path: "out/*" }
