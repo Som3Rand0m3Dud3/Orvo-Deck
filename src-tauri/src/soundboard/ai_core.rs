@@ -82,14 +82,35 @@ pub struct VoiceInfo {
 	pub window: usize,
 }
 
+/// The input names a voice model uses. RVC's own export and other converters
+/// (w-okada, the browser converter) name the same inputs differently.
+struct VoiceIo {
+	phone: String,
+	lengths: String,
+	pitch: String,
+	pitchf: String,
+	speaker: String,
+	rnd: Option<String>,
+}
+
+fn voice_io(s: &Session) -> anyhow::Result<VoiceIo> {
+	let names: Vec<String> = s.inputs().iter().map(|i| i.name().to_string()).collect();
+	let find = |alts: &[&str]| alts.iter().find(|a| names.iter().any(|n| n == *a)).map(|a| a.to_string());
+	let need = |alts: &[&str], what: &str| find(alts).ok_or_else(|| anyhow::anyhow!("this isn't an RVC voice with pitch (no {what} input; it has: {})", names.join(", ")));
+	Ok(VoiceIo {
+		phone: need(&["phone", "feats", "feats768"], "speech features")?,
+		lengths: need(&["phone_lengths", "p_len", "feats_length"], "length")?,
+		pitch: need(&["pitch"], "pitch")?,
+		pitchf: need(&["pitchf", "nsff0", "f0"], "pitch curve")?,
+		speaker: need(&["ds", "sid", "speaker_id"], "speaker")?,
+		rnd: find(&["rnd", "noise"]),
+	})
+}
+
 /// Checks a voice model is an RVC v2 model with pitch, and measures its sample rate.
 pub fn inspect_voice(s: &mut Session) -> anyhow::Result<VoiceInfo> {
-	for need in ["phone", "phone_lengths", "pitch", "pitchf", "ds", "rnd"] {
-		if !s.inputs().iter().any(|i| i.name() == need) {
-			anyhow::bail!("this isn't an RVC voice with pitch (it has no \"{need}\" input)");
-		}
-	}
-	let phone = dims(s, "phone").unwrap_or_default();
+	let io = voice_io(s)?;
+	let phone = dims(s, &io.phone).unwrap_or_default();
 	match phone.get(2) {
 		Some(768) => {}
 		Some(256) => anyhow::bail!("this is an old RVC v1 voice; only v2 voices work"),
@@ -101,7 +122,15 @@ pub fn inspect_voice(s: &mut Session) -> anyhow::Result<VoiceInfo> {
 	};
 	let out = run_voice(s, window, &vec![0.0; window * 768], &vec![0.0; window], 0)?;
 	let raw = out.len() as f64 / window as f64 * 100.0;
-	let sr = [32_000u32, 40_000, 44_100, 48_000].into_iter().min_by_key(|r| (*r as f64 - raw).abs() as u64).unwrap();
+	// the browser converter stores the rate; otherwise it is measured from the output length
+	let stored = s
+		.metadata()
+		.ok()
+		.and_then(|m| m.custom("metadata"))
+		.and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+		.and_then(|v| v.get("samplingRate").and_then(|r| r.as_u64()))
+		.map(|r| r as u32);
+	let sr = stored.unwrap_or_else(|| [32_000u32, 40_000, 44_100, 48_000].into_iter().min_by_key(|r| (*r as f64 - raw).abs() as u64).unwrap());
 	if (sr as f64 - raw).abs() > 2_000.0 {
 		anyhow::bail!("couldn't work out the voice's sample rate ({raw:.0})");
 	}
@@ -118,17 +147,21 @@ fn coarse(f0: f32) -> i64 {
 }
 
 fn run_voice(s: &mut Session, t: usize, phone: &[f32], f0: &[f32], seed: u64) -> anyhow::Result<Vec<f32>> {
+	let io = voice_io(s)?;
 	let pitch: Vec<i64> = f0.iter().map(|&f| coarse(f)).collect();
-	let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-	let rnd: Vec<f32> = (0..192 * t).map(|_| gauss(&mut rng)).collect();
-	let outputs = s.run(ort::inputs![
-		"phone" => Tensor::from_array(([1usize, t, 768], phone.to_vec()))?,
-		"phone_lengths" => Tensor::from_array(([1usize], vec![t as i64]))?,
-		"pitch" => Tensor::from_array(([1usize, t], pitch))?,
-		"pitchf" => Tensor::from_array(([1usize, t], f0.to_vec()))?,
-		"ds" => Tensor::from_array(([1usize], vec![0i64]))?,
-		"rnd" => Tensor::from_array(([1usize, 192, t], rnd))?,
-	])?;
+	let mut inputs: Vec<(String, ort::session::SessionInputValue<'static>)> = vec![
+		(io.phone, Tensor::from_array(([1usize, t, 768], phone.to_vec()))?.into()),
+		(io.lengths, Tensor::from_array(([1usize], vec![t as i64]))?.into()),
+		(io.pitch, Tensor::from_array(([1usize, t], pitch))?.into()),
+		(io.pitchf, Tensor::from_array(([1usize, t], f0.to_vec()))?.into()),
+		(io.speaker, Tensor::from_array(([1usize], vec![0i64]))?.into()),
+	];
+	if let Some(r) = io.rnd {
+		let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+		let rnd: Vec<f32> = (0..192 * t).map(|_| gauss(&mut rng)).collect();
+		inputs.push((r, Tensor::from_array(([1usize, 192, t], rnd))?.into()));
+	}
+	let outputs = s.run(inputs)?;
 	let (_, audio) = outputs[0].try_extract_tensor::<f32>()?;
 	Ok(audio.to_vec())
 }
