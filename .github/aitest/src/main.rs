@@ -6,6 +6,16 @@ fn main() -> anyhow::Result<()> {
 	let a: Vec<String> = std::env::args().collect();
 	let (engine, voice_p, input, output, gpu) = (Path::new(&a[1]), Path::new(&a[2]), &a[3], &a[4], a.get(5).map(|s| s == "gpu").unwrap_or(false));
 	load_runtime(engine)?;
+	if gpu {
+		for (label, f) in [("gpu", ort::ep::directml::DeviceFilter::Gpu), ("any", ort::ep::directml::DeviceFilter::Any)] {
+			let r = ort::session::Session::builder().map_err(|e| anyhow::anyhow!("{e}")).and_then(|b| {
+				b.with_memory_pattern(false).map_err(|e| anyhow::anyhow!("{e}"))?
+					.with_execution_providers([ort::ep::DirectML::default().with_device_filter(f).build().error_on_failure()]).map_err(|e| anyhow::anyhow!("{e}"))?
+					.commit_from_file(engine.join("rmvpe.onnx")).map_err(|e| anyhow::anyhow!("{e}"))
+			});
+			println!("DirectML {label}: {}", match r { Ok(_) => "OK".to_string(), Err(e) => format!("{e:#}") });
+		}
+	}
 	let (mut cv, g1) = open(&engine.join("contentvec.onnx"), gpu)?;
 	let (mut rm, g2) = open(&engine.join("rmvpe.onnx"), gpu)?;
 	let (mut vc, g3) = open(voice_p, gpu)?;
