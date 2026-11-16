@@ -63,6 +63,10 @@ if __name__ == "__main__":
     cfg = config_list(sr)
     net = build(cfg)
     net.remove_weight_norm()
+    # give every weight distinct values so the exporter can't merge equal ones into one
+    with torch.no_grad():
+        for p in net.parameters():
+            p.add_(torch.rand_like(p) * 1e-3)
     w = Wrap(net).eval()
     T = 64
     args = (torch.randn(1, T, 768), torch.tensor([T]), torch.randint(1, 255, (1, T)), torch.rand(1, T) * 200 + 100,

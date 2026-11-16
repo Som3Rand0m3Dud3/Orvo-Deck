@@ -199,6 +199,8 @@ net.flow.flows.2.enc.res_skip_layers.2.bias 192
 net.flow.flows.2.enc.res_skip_layers.2.weight 192 192 1
 net.flow.flows.2.enc.cond_layer.bias 1152
 net.flow.flows.2.enc.cond_layer.weight 1152 256 1
+net.flow.flows.2.post.weight 96 192 1
+net.flow.flows.2.post.bias 96
 net.flow.flows.4.pre.weight 192 96 1
 net.flow.flows.4.pre.bias 192
 net.flow.flows.4.enc.in_layers.0.bias 384
@@ -215,6 +217,8 @@ net.flow.flows.4.enc.res_skip_layers.2.bias 192
 net.flow.flows.4.enc.res_skip_layers.2.weight 192 192 1
 net.flow.flows.4.enc.cond_layer.bias 1152
 net.flow.flows.4.enc.cond_layer.weight 1152 256 1
+net.flow.flows.4.post.weight 96 192 1
+net.flow.flows.4.post.bias 96
 net.flow.flows.6.pre.weight 192 96 1
 net.flow.flows.6.pre.bias 192
 net.flow.flows.6.enc.in_layers.0.bias 384
@@ -231,6 +235,8 @@ net.flow.flows.6.enc.res_skip_layers.2.bias 192
 net.flow.flows.6.enc.res_skip_layers.2.weight 192 192 1
 net.flow.flows.6.enc.cond_layer.bias 1152
 net.flow.flows.6.enc.cond_layer.weight 1152 256 1
+net.flow.flows.6.post.weight 96 192 1
+net.flow.flows.6.post.bias 96
 net.emb_g.weight 109 256
 net.enc_p.emb_phone.weight 192 768
 net.enc_p.emb_phone.bias 192
@@ -297,6 +303,16 @@ net.enc_p.encoder.attn_layers.5.conv_o.weight 192 192 1
 net.enc_p.encoder.attn_layers.5.conv_o.bias 192
 net.enc_p.encoder.norm_layers_1.0.gamma 192
 net.enc_p.encoder.norm_layers_1.0.beta 192
+net.enc_p.encoder.norm_layers_1.1.gamma 192
+net.enc_p.encoder.norm_layers_1.1.beta 192
+net.enc_p.encoder.norm_layers_1.2.gamma 192
+net.enc_p.encoder.norm_layers_1.2.beta 192
+net.enc_p.encoder.norm_layers_1.3.gamma 192
+net.enc_p.encoder.norm_layers_1.3.beta 192
+net.enc_p.encoder.norm_layers_1.4.gamma 192
+net.enc_p.encoder.norm_layers_1.4.beta 192
+net.enc_p.encoder.norm_layers_1.5.gamma 192
+net.enc_p.encoder.norm_layers_1.5.beta 192
 net.enc_p.encoder.ffn_layers.0.conv_1.weight 768 192 3
 net.enc_p.encoder.ffn_layers.0.conv_1.bias 768
 net.enc_p.encoder.ffn_layers.0.conv_2.weight 192 768 3
@@ -321,5 +337,17 @@ net.enc_p.encoder.ffn_layers.5.conv_1.weight 768 192 3
 net.enc_p.encoder.ffn_layers.5.conv_1.bias 768
 net.enc_p.encoder.ffn_layers.5.conv_2.weight 192 768 3
 net.enc_p.encoder.ffn_layers.5.conv_2.bias 192
+net.enc_p.encoder.norm_layers_2.0.gamma 192
+net.enc_p.encoder.norm_layers_2.0.beta 192
+net.enc_p.encoder.norm_layers_2.1.gamma 192
+net.enc_p.encoder.norm_layers_2.1.beta 192
+net.enc_p.encoder.norm_layers_2.2.gamma 192
+net.enc_p.encoder.norm_layers_2.2.beta 192
+net.enc_p.encoder.norm_layers_2.3.gamma 192
+net.enc_p.encoder.norm_layers_2.3.beta 192
+net.enc_p.encoder.norm_layers_2.4.gamma 192
+net.enc_p.encoder.norm_layers_2.4.beta 192
+net.enc_p.encoder.norm_layers_2.5.gamma 192
+net.enc_p.encoder.norm_layers_2.5.beta 192
 net.enc_p.proj.weight 384 192 1
 net.enc_p.proj.bias 384
