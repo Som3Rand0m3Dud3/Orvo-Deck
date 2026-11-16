@@ -199,6 +199,7 @@ async fn main() {
 			soundboard::sb_set_tweak,
 			soundboard::ai::sb_ai_install,
 			soundboard::ai::sb_ai_add,
+			soundboard::ai::sb_ai_add_bytes,
 			soundboard::ai::sb_ai_update,
 			soundboard::ai::sb_ai_remove,
 			soundboard::ai::sb_ai_state,

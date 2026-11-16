@@ -64,7 +64,7 @@
 
 	async function addVoice() {
 		error = "";
-		const picked = await open({ multiple: false, directory: false, filters: [{ name: "AI voice", extensions: ["onnx", "pth"] }] });
+		const picked = await open({ multiple: false, directory: false, filters: [{ name: "AI voice", extensions: ["pth", "onnx", "zip"] }] });
 		if (!picked || Array.isArray(picked)) return;
 		busy = true;
 		try {
@@ -74,6 +74,36 @@
 		} catch (e) {
 			error = String(e);
 		}
+		busy = false;
+	}
+
+	// drop zone: any number of .pth / .onnx / .zip files, added one after another
+	let dragging = false;
+	let dropNote = "";
+	function onDragLeave(e: DragEvent) {
+		if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) dragging = false;
+	}
+	async function onDrop(e: DragEvent) {
+		dragging = false;
+		const files = [...(e.dataTransfer?.files ?? [])];
+		if (!files.length || busy) return;
+		error = "";
+		busy = true;
+		const failed: string[] = [];
+		let added = 0;
+		for (const [i, f] of files.entries()) {
+			dropNote = files.length > 1 ? `Adding ${i + 1} of ${files.length}: ${f.name}` : `Adding ${f.name}`;
+			try {
+				const data = new Uint8Array(await f.arrayBuffer());
+				await invoke<AiVoice>("sb_ai_add_bytes", data, { headers: { "x-file-name": encodeURIComponent(f.name) } });
+				added++;
+			} catch (err) {
+				failed.push(`${f.name}: ${err}`);
+			}
+		}
+		await refreshSoundboard();
+		if (failed.length) error = (added ? `Added ${added}. ` : "") + `Couldn't add ${failed.join(" · ")}`;
+		dropNote = "";
 		busy = false;
 	}
 
@@ -247,25 +277,52 @@
 				on:click={addVoice}
 			>
 				<Plus size="28" />
-				<span class="text-sm font-semibold">{busy ? "Checking the voice…" : "Add voice"}</span>
-				<span class="text-xs text-neutral-400">.onnx file</span>
+				<span class="text-sm font-semibold">{busy ? "Adding the voice…" : "Add voice"}</span>
+				<span class="text-xs text-neutral-400">.pth, .onnx or .zip</span>
 			</button>
 		</div>
 
-		<div class="text-xs text-neutral-400 leading-relaxed max-w-3xl flex flex-col gap-1">
-			<p>
-				Get voices from
-				<button class="underline" on:click={() => invoke("open_url", { url: "https://huggingface.co/models?search=rvc" })}>Hugging Face</button>
-				or
-				<button class="underline" on:click={() => invoke("open_url", { url: "https://voice-models.com" })}>Voice-Models.com</button>. Use RVC v2 voices.
-			</p>
-			<p>
-				Most voices come as <strong>.pth</strong> files. Until Orvo can open those itself, convert them to .onnx with
-				<button class="underline" on:click={() => invoke("open_url", { url: "https://voicechanger.live/tools/model-converter" })}>this free converter</button>
-				(it runs in your browser).
-			</p>
-			<p>Please don't use a real person's voice to fool people.</p>
+		<!-- svelte-ignore a11y-no-static-element-interactions -->
+		<div
+			class="flex flex-col items-center justify-center gap-1 py-7 rounded-2xl border-2 border-dashed transition-colors text-center {dragging
+				? 'bg-[#1D2A44]'
+				: 'bg-neutral-900/80 border-neutral-700'}"
+			style={dragging ? "border-color: var(--orvo-accent)" : ""}
+			on:dragenter|preventDefault={() => (dragging = true)}
+			on:dragover|preventDefault={() => (dragging = true)}
+			on:dragleave|preventDefault={onDragLeave}
+			on:drop|preventDefault={onDrop}
+		>
+			<DownloadSimple size="26" class="text-neutral-400" />
+			<span class="text-base font-semibold text-neutral-200">{busy ? dropNote || "Adding…" : dragging ? "Let go to add" : "Drop voices here to add them"}</span>
+			<span class="text-xs text-neutral-400">.pth, .onnx or .zip files. Several at once is fine; .pth voices are converted for you.</span>
 		</div>
+
+		<details class="group max-w-3xl rounded-2xl border border-neutral-700 bg-neutral-900" open={voices.length == 0}>
+			<summary class="flex items-center gap-2 px-4 py-3 cursor-pointer select-none text-sm font-semibold text-neutral-100">
+				Where do I get voices?
+				<span class="text-xs font-normal text-neutral-400 group-open:hidden">Show the guide</span>
+			</summary>
+			<div class="flex flex-col gap-3 px-4 pb-4 text-sm text-neutral-300 leading-relaxed">
+				<ol class="flex flex-col gap-2 list-decimal pl-5">
+					<li>
+						Find a voice on
+						<button class="underline text-neutral-100" on:click={() => invoke("open_url", { url: "https://voice-models.com" })}>Voice-Models.com</button>
+						or
+						<button class="underline text-neutral-100" on:click={() => invoke("open_url", { url: "https://huggingface.co/models?search=rvc" })}>Hugging Face</button>.
+						Search for a name plus <strong>"RVC v2"</strong>.
+					</li>
+					<li>Download it. You'll get a <strong>.pth</strong> file or a <strong>.zip</strong>. No need to unzip it or convert anything.</li>
+					<li>Drop it in the box above (or click <strong>Add voice</strong>). Then click the voice to turn it on and press <strong>Hear it</strong> to test.</li>
+				</ol>
+				<div class="flex flex-col gap-1 text-xs text-neutral-400">
+					<p>Works with: RVC <strong class="text-neutral-300">v2</strong> voices at 32, 40 or 48 kHz. Most voices you'll find are these.</p>
+					<p>Won't work: old <strong class="text-neutral-300">v1</strong> voices, "no f0" voices, and training files named like <strong class="text-neutral-300">G_2333.pth</strong>.</p>
+					<p>The <strong class="text-neutral-300">.index</strong> file that comes with some voices isn't needed.</p>
+					<p>Please don't use a real person's voice to fool people.</p>
+				</div>
+			</div>
+		</details>
 	{/if}
 </div>
 

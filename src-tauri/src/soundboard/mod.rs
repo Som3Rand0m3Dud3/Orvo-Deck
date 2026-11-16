@@ -10,6 +10,7 @@ pub mod effects;
 pub mod engine;
 pub mod fx;
 pub mod online;
+pub mod pth;
 pub mod render;
 
 use std::collections::HashMap;

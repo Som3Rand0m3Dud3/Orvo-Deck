@@ -5,6 +5,8 @@
 //! (DirectML) or, if there is none, the CPU. Nothing is loaded while no AI voice is on.
 
 use std::path::{Path, PathBuf};
+
+use anyhow::Context;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -361,28 +363,95 @@ fn runtime() -> anyhow::Result<()> {
 		.map_err(|e| anyhow::anyhow!("couldn't start the AI engine: {e}"))
 }
 
-/// Adds a voice model (.onnx). `.pth` files need converting first.
+/// Adds a voice from a file: an .onnx model, an RVC .pth (converted here), or a .zip holding either.
 #[command]
 pub async fn sb_ai_add(path: String) -> Result<AiVoice, Error> {
 	let src = PathBuf::from(&path);
+	let name = src.file_stem().and_then(|s| s.to_str()).unwrap_or("AI voice").to_string();
 	let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-	if ext == "pth" {
-		return Err(anyhow::anyhow!("This is a .pth voice. Orvo can't open those yet — convert it to .onnx first (see the link under Add voice).").into());
+	add_voice(name, ext, Source::Path(src)).await
+}
+
+/// Same as `sb_ai_add`, for a file dropped onto the window (the bytes come in the request body,
+/// the file name in the `x-file-name` header).
+#[command]
+pub async fn sb_ai_add_bytes(request: tauri::ipc::Request<'_>) -> Result<AiVoice, Error> {
+	let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+		return Err(anyhow::anyhow!("no file was sent").into());
+	};
+	let file = request
+		.headers()
+		.get("x-file-name")
+		.and_then(|h| h.to_str().ok())
+		.map(percent_decode)
+		.unwrap_or_else(|| "AI voice.onnx".into());
+	let path = PathBuf::from(&file);
+	let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("AI voice").to_string();
+	let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+	add_voice(name, ext, Source::Bytes(data.clone())).await
+}
+
+fn percent_decode(s: &str) -> String {
+	let b = s.as_bytes();
+	let mut out = Vec::with_capacity(b.len());
+	let mut i = 0;
+	while i < b.len() {
+		if b[i] == b'%' && i + 2 < b.len() {
+			if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+				out.push(v);
+				i += 3;
+				continue;
+			}
+		}
+		out.push(b[i]);
+		i += 1;
 	}
-	if ext != "onnx" {
-		return Err(anyhow::anyhow!("pick a voice model (.onnx)").into());
+	String::from_utf8_lossy(&out).into_owned()
+}
+
+enum Source {
+	Path(PathBuf),
+	Bytes(Vec<u8>),
+}
+
+/// Turns whatever was given into .onnx bytes.
+fn voice_bytes(ext: &str, src: Source) -> anyhow::Result<Vec<u8>> {
+	let raw = match src {
+		Source::Path(p) => std::fs::read(&p).with_context(|| format!("couldn't read {}", p.display()))?,
+		Source::Bytes(b) => b,
+	};
+	match ext {
+		"onnx" => Ok(raw),
+		"pth" => super::pth::convert(std::io::Cursor::new(raw)),
+		"zip" => {
+			let inner = super::pth::pth_from_zip(std::io::Cursor::new(raw))?;
+			// a .pth is itself a zip; an .onnx starts with protobuf bytes
+			if inner.starts_with(b"PK") {
+				super::pth::convert(std::io::Cursor::new(inner))
+			} else {
+				Ok(inner)
+			}
+		}
+		_ => anyhow::bail!("drop a voice file: .pth, .onnx or a .zip with one inside"),
+	}
+}
+
+async fn add_voice(name: String, ext: String, src: Source) -> Result<AiVoice, Error> {
+	if !["onnx", "pth", "zip"].contains(&ext.as_str()) {
+		return Err(anyhow::anyhow!("pick a voice file: .pth, .onnx or a .zip with one inside").into());
 	}
 	if !installed() {
 		return Err(anyhow::anyhow!("download the AI engine first").into());
 	}
 	let voice = tokio::task::spawn_blocking(move || -> anyhow::Result<AiVoice> {
+		let bytes = voice_bytes(&ext, src)?;
 		runtime()?;
 		let id = super::new_id();
 		let dir = voices_dir();
 		std::fs::create_dir_all(&dir)?;
 		let file = format!("{id}.onnx");
 		let dest = dir.join(&file);
-		std::fs::copy(&src, &dest)?;
+		std::fs::write(&dest, bytes)?;
 		let checked = (|| -> anyhow::Result<VoiceInfo> {
 			let (mut s, _) = ai_core::open(&dest, false)?;
 			ai_core::inspect_voice(&mut s)
@@ -394,10 +463,10 @@ pub async fn sb_ai_add(path: String) -> Result<AiVoice, Error> {
 				return Err(e);
 			}
 		};
-		let name: String = src.file_stem().and_then(|s| s.to_str()).unwrap_or("AI voice").replace(['_', '-'], " ").chars().take(40).collect();
+		let name: String = name.replace(['_', '-'], " ").trim().chars().take(40).collect();
 		Ok(AiVoice {
 			id,
-			name,
+			name: if name.is_empty() { "AI voice".into() } else { name },
 			file,
 			sr: info.sr,
 			window: info.window,
